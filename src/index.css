@@ -1,0 +1,52 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Instrument+Serif:ital,wght@0,400;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-terracotta: #C96A4A;
+  --color-sand: #EEDC82;
+  --color-sand-light: #F7EFCF;
+  --color-sand-dark: #DEC763;
+  --color-swiss-dark: #1E1A17;
+  --color-swiss-light: #FAFAF8;
+  --color-swiss-gray: #EAE5DD;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-swiss-light);
+  color: var(--color-swiss-dark);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Swiss typography accents */
+.swiss-header {
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.swiss-border {
+  border-color: var(--color-swiss-dark);
+}
+
+/* Remove default scrollbar styles and design custom sleek ones */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-swiss-light);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-terracotta);
+  border-radius: 0px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-swiss-dark);
+}

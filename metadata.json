@@ -1,0 +1,6 @@
+{
+  "name": "HospitalityOS",
+  "description": "Enterprise-grade multi-tenant AI Hospitality Operating System with QR ordering, KDS, guest assistant, cashier/waiter dashboards, and analytics, styled in custom Swiss Design.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
