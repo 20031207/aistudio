@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, FormEvent, useMemo } from "react";
+import { jsPDF } from "jspdf";
 import { 
   Building2, 
   Layers, 
@@ -35,7 +36,8 @@ import {
   CheckCircle,
   DollarSign,
   Download,
-  FileText
+  FileText,
+  Calendar
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -56,13 +58,25 @@ import { AnimatePresence, motion } from "motion/react";
 
 export default function App() {
   // NAVIGATION & ROLE MANAGERS
-  const [activeRole, setActiveRole] = useState<"SuperAdmin" | "HotelAdmin" | "Kitchen" | "WaiterCashier" | "Guest">("Guest");
-  const [currentHotelId, setCurrentHotelId] = useState<string>("h-yak-yeti");
-  const [currentBranchId, setCurrentBranchId] = useState<string>("b-ktm");
-  const [activeGuestTableId, setActiveGuestTableId] = useState<string>("t-2"); // default simulated table scan
+  const [activeRole, setActiveRole] = useState<"SuperAdmin" | "HotelAdmin" | "Kitchen" | "WaiterCashier" | "Guest">(() => {
+    const saved = localStorage.getItem("activeRole");
+    return (saved as any) || "Guest";
+  });
+  const notificationTimeoutRef = useRef<any>(null);
+  const [currentHotelId, setCurrentHotelId] = useState<string>(() => {
+    return localStorage.getItem("currentHotelId") || "h-yak-yeti";
+  });
+  const [currentBranchId, setCurrentBranchId] = useState<string>(() => {
+    return localStorage.getItem("currentBranchId") || "b-ktm";
+  });
+  const [activeGuestTableId, setActiveGuestTableId] = useState<string>(() => {
+    return localStorage.getItem("activeGuestTableId") || "t-2";
+  }); // default simulated table scan
   
   // LOGIN STATE FOR HOTELS
-  const [loggedInHotelId, setLoggedInHotelId] = useState<string | null>(null);
+  const [loggedInHotelId, setLoggedInHotelId] = useState<string | null>(() => {
+    return localStorage.getItem("loggedInHotelId") || null;
+  });
   const [loginUsername, setLoginUsername] = useState<string>("");
   const [loginPassword, setLoginPassword] = useState<string>("");
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -90,7 +104,12 @@ export default function App() {
   
   // AI INTERFACES
   const [guestAiQuery, setGuestAiQuery] = useState<string>("");
-  const [guestAiResponse, setGuestAiResponse] = useState<string>("");
+  const [guestAiHistory, setGuestAiHistory] = useState<{ sender: "user" | "butler"; text: string; suggestedItemIds?: string[] }[]>([
+    {
+      sender: "butler",
+      text: "Namaste. I am your Swiss-trained Himalayan AI Butler. How may I elevate your culinary experience today? I can assist with recommendations based on dietary constraints, budget limits, spicy preferences, or ideal local pairings."
+    }
+  ]);
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [biInsights, setBiInsights] = useState<string>("");
   const [biLoading, setBiLoading] = useState<boolean>(false);
@@ -102,9 +121,73 @@ export default function App() {
   const [reservationName, setReservationName] = useState<string>("");
   const [reservationTime, setReservationTime] = useState<string>("");
 
+  // STAFF WORKSPACE & NOTIFICATIONS STATE
+  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(() => {
+    return localStorage.getItem("selectedStaffId") || null;
+  });
+  const [staffNotifications, setStaffNotifications] = useState<any[]>([]);
+  const [isStaffNotificationOpen, setIsStaffNotificationOpen] = useState<boolean>(false);
+
   // SELECTION & SUB-PANEL TAB NAVIGATION
-  const [adminActiveTab, setAdminActiveTab] = useState<"analytics" | "menu" | "tables" | "staff" | "inventory" | "rooms">("analytics");
+  const [adminActiveTab, setAdminActiveTab] = useState<"analytics" | "menu" | "tables" | "staff" | "inventory" | "rooms" | "branches">(() => {
+    const saved = localStorage.getItem("adminActiveTab");
+    return (saved as any) || "analytics";
+  });
   const [guestRightTab, setGuestRightTab] = useState<"cart" | "orders" | "history">("cart");
+
+  // Synchronize navigation & role states to localStorage
+  useEffect(() => {
+    localStorage.setItem("activeRole", activeRole);
+  }, [activeRole]);
+
+  useEffect(() => {
+    localStorage.setItem("currentHotelId", currentHotelId);
+  }, [currentHotelId]);
+
+  useEffect(() => {
+    localStorage.setItem("currentBranchId", currentBranchId);
+  }, [currentBranchId]);
+
+  useEffect(() => {
+    localStorage.setItem("activeGuestTableId", activeGuestTableId);
+  }, [activeGuestTableId]);
+
+  useEffect(() => {
+    if (loggedInHotelId) {
+      localStorage.setItem("loggedInHotelId", loggedInHotelId);
+    } else {
+      localStorage.removeItem("loggedInHotelId");
+    }
+  }, [loggedInHotelId]);
+
+  useEffect(() => {
+    if (selectedStaffId) {
+      localStorage.setItem("selectedStaffId", selectedStaffId);
+    } else {
+      localStorage.removeItem("selectedStaffId");
+    }
+  }, [selectedStaffId]);
+
+  useEffect(() => {
+    localStorage.setItem("adminActiveTab", adminActiveTab);
+  }, [adminActiveTab]);
+
+  // BRANCH MANAGEMENT STATE
+  const [newBranchForm, setNewBranchForm] = useState({ 
+    name: "", 
+    location: "", 
+    contactPhone: "", 
+    operatingHours: "09:00 - 22:00", 
+    autoCreateTables: 0 
+  });
+  const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
+  const [editBranchForm, setEditBranchForm] = useState({ 
+    name: "", 
+    location: "", 
+    contactPhone: "", 
+    operatingHours: "09:00 - 22:00" 
+  });
+
   const [newStaffForm, setNewStaffForm] = useState({
     name: "",
     role: "Kitchen Staff" as Employee["role"],
@@ -161,25 +244,61 @@ export default function App() {
   const [customizerPrimary, setCustomizerPrimary] = useState<string>("#C96A4A");
   const [customizerSecondary, setCustomizerSecondary] = useState<string>("#EEDC82");
   const [customizerFont, setCustomizerFont] = useState<string>("Inter");
+  const [customizerUsername, setCustomizerUsername] = useState<string>("");
+  const [customizerPassword, setCustomizerPassword] = useState<string>("");
+
+  // SUPER ADMIN PORTAL TABS
+  const [superAdminActiveTab, setSuperAdminActiveTab] = useState<"tenants" | "branding" | "menu" | "analytics" | "branches">("tenants");
+  const [superAdminMultiBranchHotelId, setSuperAdminMultiBranchHotelId] = useState<string>("");
+
+  // SUPER ADMIN BRANCH PROVISIONING STATE
+  const [superAdminNewBranchHotelId, setSuperAdminNewBranchHotelId] = useState<string>("");
+  const [superAdminNewBranchName, setSuperAdminNewBranchName] = useState<string>("");
+  const [superAdminNewBranchLocation, setSuperAdminNewBranchLocation] = useState<string>("");
+  const [superAdminNewBranchContact, setSuperAdminNewBranchContact] = useState<string>("");
+  const [superAdminNewBranchHours, setSuperAdminNewBranchHours] = useState<string>("09:00 - 22:00");
+  const [superAdminNewBranchTables, setSuperAdminNewBranchTables] = useState<number>(0);
 
   const [deleteConfirmState, setDeleteConfirmState] = useState<{ isOpen: boolean; itemId: string; itemName: string } | null>(null);
 
   const [showNotification, setShowNotification] = useState<string | null>(null);
 
-  // FETCH ALL DATA
+  // FETCH ALL DATA WITH OPTIMIZED RETRY AND FALLBACK
+  const fetchWithFallbackAndRetry = async <T,>(url: string, fallback: T, retries = 10, delay = 300): Promise<T> => {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} ${response.statusText}`);
+        }
+        return await response.json() as T;
+      } catch (err) {
+        console.warn(`Attempt ${attempt} failed to fetch "${url}":`, err);
+        if (attempt === retries) {
+          console.warn(`All ${retries} attempts failed for "${url}". Falling back to default.`);
+          return fallback;
+        }
+        // Exponential backoff capped at 2000ms
+        const sleepTime = Math.min(delay * Math.pow(2, attempt - 1), 2000);
+        await new Promise(resolve => setTimeout(resolve, sleepTime));
+      }
+    }
+    return fallback;
+  };
+
   const fetchData = async () => {
     try {
       setSyncStatus("Syncing...");
       const [resHotels, resTables, resMenu, resOrders, resStock, resEmployees, resRooms, resCalls, resLbConfig] = await Promise.all([
-        fetch("/api/hotels").then(r => r.json()),
-        fetch("/api/tables").then(r => r.json()),
-        fetch("/api/menu").then(r => r.json()),
-        fetch("/api/orders").then(r => r.json()),
-        fetch("/api/inventory").then(r => r.json()),
-        fetch("/api/employees").then(r => r.json()),
-        fetch("/api/rooms").then(r => r.json()),
-        fetch("/api/service-calls").then(r => r.json()),
-        fetch("/api/load-balancer/config").then(r => r.json()).catch(() => ({ activeBalancingAlgorithm: "RoundRobin", autoBalancingEnabled: true }))
+        fetchWithFallbackAndRetry<any[]>("/api/hotels", []),
+        fetchWithFallbackAndRetry<any[]>("/api/tables", []),
+        fetchWithFallbackAndRetry<any[]>("/api/menu", []),
+        fetchWithFallbackAndRetry<any[]>("/api/orders", []),
+        fetchWithFallbackAndRetry<any[]>("/api/inventory", []),
+        fetchWithFallbackAndRetry<any[]>("/api/employees", []),
+        fetchWithFallbackAndRetry<any[]>("/api/rooms", []),
+        fetchWithFallbackAndRetry<any[]>("/api/service-calls", []),
+        fetchWithFallbackAndRetry<any>("/api/load-balancer/config", { activeBalancingAlgorithm: "RoundRobin", autoBalancingEnabled: true })
       ]);
 
       setHotels(resHotels);
@@ -197,6 +316,11 @@ export default function App() {
       
       setSyncStatus("Synchronized");
       setLoading(false);
+      
+      // Fetch staff notifications if an employee is active
+      if (selectedStaffId) {
+        await fetchStaffNotifications(selectedStaffId);
+      }
     } catch (err) {
       console.error("Error synchronizing system data:", err);
       setSyncStatus("Failed to Sync");
@@ -204,10 +328,56 @@ export default function App() {
     }
   };
 
+  const fetchStaffNotifications = async (staffId: string) => {
+    try {
+      const response = await fetch(`/api/staff-notifications?employeeId=${staffId}`);
+      if (response.ok) {
+        const notifs = await response.json();
+        setStaffNotifications(notifs);
+      }
+    } catch (err) {
+      console.error("Error fetching staff notifications:", err);
+    }
+  };
+
+  const handleMarkNotificationRead = async (notificationId: string) => {
+    try {
+      const response = await fetch("/api/staff-notifications/read", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notificationId })
+      });
+      if (response.ok) {
+        if (selectedStaffId) {
+          await fetchStaffNotifications(selectedStaffId);
+        }
+      }
+    } catch (err) {
+      console.error("Error marking notification read:", err);
+    }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    if (!selectedStaffId) return;
+    try {
+      const response = await fetch("/api/staff-notifications/read", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId: selectedStaffId })
+      });
+      if (response.ok) {
+        await fetchStaffNotifications(selectedStaffId);
+        triggerNotification("All staff alerts acknowledged.");
+      }
+    } catch (err) {
+      console.error("Error marking all notifications read:", err);
+    }
+  };
+
   useEffect(() => {
     fetchData();
-    // Auto sync every 15 seconds to simulate Supabase Realtime
-    const interval = setInterval(fetchData, 15000);
+    // Auto sync every 5 seconds to simulate Supabase Realtime & ensure immediate auto-sync
+    const interval = setInterval(fetchData, 5000);
 
     // Parse URL Search Parameters for Table QR scans
     const params = new URLSearchParams(window.location.search);
@@ -232,7 +402,12 @@ export default function App() {
       setActiveRole("Guest");
     }
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (notificationTimeoutRef.current) {
+        clearTimeout(notificationTimeoutRef.current);
+      }
+    };
   }, []);
 
   // Update tick every second for real-time countdown tracking
@@ -242,6 +417,14 @@ export default function App() {
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (selectedStaffId) {
+      fetchStaffNotifications(selectedStaffId);
+    } else {
+      setStaffNotifications([]);
+    }
+  }, [selectedStaffId]);
 
   // Dynamic custom brand identity injection for the active hotel tenant
   useEffect(() => {
@@ -333,13 +516,21 @@ export default function App() {
       setCustomizerPrimary(hotel.primaryColor || "#C96A4A");
       setCustomizerSecondary(hotel.secondaryColor || "#EEDC82");
       setCustomizerFont(hotel.font || "Inter");
+      setCustomizerUsername(hotel.username || "");
+      setCustomizerPassword(hotel.password || "");
     }
   }, [customizerHotelId, hotels]);
 
   // NOTIFICATION UTILITY
   const triggerNotification = (msg: string) => {
+    if (notificationTimeoutRef.current) {
+      clearTimeout(notificationTimeoutRef.current);
+    }
     setShowNotification(msg);
-    setTimeout(() => setShowNotification(null), 4000);
+    notificationTimeoutRef.current = setTimeout(() => {
+      setShowNotification(null);
+      notificationTimeoutRef.current = null;
+    }, 4000);
   };
 
   // HANDLERS
@@ -405,6 +596,94 @@ export default function App() {
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleSuperAdminProvisionBranch = async (e: FormEvent) => {
+    e.preventDefault();
+    const targetHotelId = superAdminNewBranchHotelId || (hotels.length ? hotels[0].id : "");
+    if (!targetHotelId) {
+      triggerNotification("Please select a target hotel tenant first.");
+      return;
+    }
+    if (!superAdminNewBranchName.trim()) {
+      triggerNotification("Branch name is required.");
+      return;
+    }
+    try {
+      setSyncStatus("Syncing...");
+      const response = await fetch(`/api/hotels/${targetHotelId}/branches`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: superAdminNewBranchName,
+          location: superAdminNewBranchLocation,
+          contactPhone: superAdminNewBranchContact,
+          operatingHours: superAdminNewBranchHours,
+          autoCreateTables: superAdminNewBranchTables,
+          status: "Approved"
+        })
+      });
+      if (response.ok) {
+        triggerNotification(`Branch "${superAdminNewBranchName}" has been directly provisioned and activated.`);
+        setSuperAdminNewBranchName("");
+        setSuperAdminNewBranchLocation("");
+        setSuperAdminNewBranchContact("");
+        setSuperAdminNewBranchHours("09:00 - 22:00");
+        setSuperAdminNewBranchTables(0);
+        await fetchData();
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        triggerNotification(errData.error || "Failed to provision branch.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error provisioning branch.");
+    } finally {
+      setSyncStatus("Synchronized");
+    }
+  };
+
+  const handleApproveBranch = async (hotelId: string, branchId: string, branchName: string) => {
+    try {
+      setSyncStatus("Approving...");
+      const response = await fetch(`/api/hotels/${hotelId}/branches/${branchId}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      if (response.ok) {
+        triggerNotification(`Branch "${branchName}" has been officially approved and activated.`);
+        await fetchData();
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        triggerNotification(errData.error || "Failed to approve branch.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error approving branch.");
+    } finally {
+      setSyncStatus("Synchronized");
+    }
+  };
+
+  const handleRejectBranch = async (hotelId: string, branchId: string, branchName: string) => {
+    try {
+      setSyncStatus("Rejecting...");
+      const response = await fetch(`/api/hotels/${hotelId}/branches/${branchId}`, {
+        method: "DELETE"
+      });
+      if (response.ok) {
+        triggerNotification(`Branch request for "${branchName}" has been rejected and deleted.`);
+        await fetchData();
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        triggerNotification(errData.error || "Failed to reject branch request.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error rejecting branch request.");
+    } finally {
+      setSyncStatus("Synchronized");
     }
   };
 
@@ -491,6 +770,40 @@ export default function App() {
     }
   };
 
+  const handleToggleBranchMenuAvailability = async (itemId: string, branchId: string) => {
+    const item = menuItems.find(m => m.id === itemId);
+    if (!item) return;
+
+    const allBranches = activeHotel?.branches.map(b => b.id) || [];
+    const currentAvailability = item.branchAvailability || allBranches;
+    
+    let newAvailability: string[];
+    if (currentAvailability.includes(branchId)) {
+      newAvailability = currentAvailability.filter(id => id !== branchId);
+    } else {
+      newAvailability = [...currentAvailability, branchId];
+    }
+
+    try {
+      setSyncStatus("Updating branch availability...");
+      const response = await fetch(`/api/menu/${itemId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branchAvailability: newAvailability })
+      });
+      if (response.ok) {
+        triggerNotification(`Branch menu mapping updated successfully.`);
+        await fetchData();
+      } else {
+        triggerNotification(`Failed to update menu configuration.`);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSyncStatus("Synchronized");
+    }
+  };
+
   const handleSaveCustomBranding = async (e: FormEvent) => {
     e.preventDefault();
     const targetId = customizerHotelId || (hotels.length ? hotels[0].id : "");
@@ -509,19 +822,21 @@ export default function App() {
           tagline: customizerTagline,
           primaryColor: customizerPrimary,
           secondaryColor: customizerSecondary,
-          font: customizerFont
+          font: customizerFont,
+          username: customizerUsername,
+          password: customizerPassword
         })
       });
       
       if (response.ok) {
-        triggerNotification(`Corporate branding suite for "${customizerName}" successfully updated and persisted.`);
+        triggerNotification(`Corporate details and branding for "${customizerName}" successfully updated, auto-synced, and persisted.`);
         await fetchData();
       } else {
-        triggerNotification("Failed to save brand customization.");
+        triggerNotification("Failed to save customization details.");
       }
     } catch (err) {
       console.error(err);
-      triggerNotification("Error persisting branding suite.");
+      triggerNotification("Error persisting customization details.");
     }
   };
 
@@ -729,20 +1044,60 @@ export default function App() {
   // AI BUTLER GENERATIONS
   const handleAiRecommend = async (queryText?: string) => {
     const searchVal = queryText || guestAiQuery;
-    if (!searchVal) return;
+    if (!searchVal.trim()) return;
+
+    // Clear input
+    setGuestAiQuery("");
+
+    // Append user query to chat history
+    const updatedHistory = [
+      ...guestAiHistory,
+      { sender: "user" as const, text: searchVal }
+    ];
+    setGuestAiHistory(updatedHistory);
     setAiLoading(true);
-    setGuestAiResponse("");
+
     try {
+      // Map history for the payload, ensuring we only send the relevant turns
+      const chatHistoryPayload = updatedHistory
+        .slice(1) // exclude the initial butler welcome message to keep payload focused
+        .map(h => ({
+          sender: h.sender,
+          text: h.text
+        }));
+
       const response = await fetch("/api/ai/recommend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: searchVal, hotelId: currentHotelId })
+        body: JSON.stringify({
+          query: searchVal,
+          hotelId: currentHotelId,
+          chatHistory: chatHistoryPayload
+        })
       });
-      const data = await response.json();
-      setGuestAiResponse(data.recommendation);
+
+      if (response.ok) {
+        const data = await response.json();
+        setGuestAiHistory(prev => [
+          ...prev,
+          {
+            sender: "butler" as const,
+            text: data.recommendation,
+            suggestedItemIds: data.suggestedItemIds || []
+          }
+        ]);
+      } else {
+        throw new Error("Failed to consult AI Butler.");
+      }
     } catch (err) {
       console.error(err);
-      setGuestAiResponse("System error generating AI culinary response.");
+      setGuestAiHistory(prev => [
+        ...prev,
+        {
+          sender: "butler" as const,
+          text: "My apologies, guest. The digital terminal is experiencing minor connectivity issues. Please try again or ask our staff directly."
+        }
+      ]);
     } finally {
       setAiLoading(false);
     }
@@ -850,6 +1205,184 @@ export default function App() {
       }
     } catch (err) {
       console.error("Error updating employee status:", err);
+    }
+  };
+
+  const getShiftHours = (shiftStr?: string): number => {
+    if (!shiftStr) return 0;
+    const s = shiftStr.toLowerCase();
+    if (s.includes("off")) return 0;
+    
+    const match = s.match(/(\d+):(\d+)\s*-\s*(\d+):(\d+)/);
+    if (match) {
+      const h1 = parseInt(match[1]);
+      const h2 = parseInt(match[3]);
+      if (!isNaN(h1) && !isNaN(h2)) {
+        let diff = h2 - h1;
+        if (diff < 0) diff += 24;
+        return diff;
+      }
+    }
+    
+    if (s.includes("morning")) return 8;
+    if (s.includes("day")) return 9;
+    if (s.includes("evening")) return 8;
+    if (s.includes("night")) return 8;
+    
+    return 8; // Default scheduled hours
+  };
+
+  const handleUpdateEmployeeShift = async (employeeId: string, day: string, shift: string) => {
+    try {
+      const emp = employees.find(e => e.id === employeeId);
+      if (!emp) return;
+      const updatedShifts = {
+        ...(emp.weeklyShifts || {}),
+        [day]: shift
+      };
+      const response = await fetch(`/api/employees/${employeeId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ weeklyShifts: updatedShifts })
+      });
+      if (response.ok) {
+        triggerNotification(`Shift assigned for ${emp.name} on ${day}.`);
+        await fetchData();
+      }
+    } catch (err) {
+      console.error("Error updating employee shift:", err);
+      triggerNotification("Failed to update shift schedule.");
+    }
+  };
+
+  const handleUpdateEmployeeRate = async (employeeId: string, hourlyRate: number) => {
+    try {
+      const emp = employees.find(e => e.id === employeeId);
+      if (!emp) return;
+      const response = await fetch(`/api/employees/${employeeId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hourlyRate })
+      });
+      if (response.ok) {
+        triggerNotification(`Hourly rate updated for ${emp.name} to ${activeHotel?.currency || "NPR"} ${hourlyRate}.`);
+        await fetchData();
+      }
+    } catch (err) {
+      console.error("Error updating employee rate:", err);
+      triggerNotification("Failed to update hourly rate.");
+    }
+  };
+
+  const handleAssignWaiterToTable = async (tableId: string, waiterId: string) => {
+    try {
+      const waiter = employees.find(e => e.id === waiterId);
+      const response = await fetch(`/api/tables/${tableId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assignedWaiterId: waiterId || null,
+          assignedWaiterName: waiter ? waiter.name : null
+        })
+      });
+      if (response.ok) {
+        triggerNotification(waiter ? `Assigned Table to waiter: ${waiter.name}.` : "Cleared waiter table assignment.");
+        await fetchData();
+      }
+    } catch (err) {
+      console.error("Error assigning waiter to table:", err);
+      triggerNotification("Failed to assign waiter to table.");
+    }
+  };
+
+  const handleReassignWaiterForServiceCall = async (callId: string, waiterId: string) => {
+    try {
+      const waiter = employees.find(e => e.id === waiterId);
+      const response = await fetch(`/api/service-calls/${callId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assignedWaiterId: waiterId || null,
+          assignedWaiterName: waiter ? waiter.name : null
+        })
+      });
+      if (response.ok) {
+        triggerNotification(waiter ? `Alert routed to waiter: ${waiter.name}.` : "Cleared service alert assignment.");
+        await fetchData();
+      }
+    } catch (err) {
+      console.error("Error reassigning service call waiter:", err);
+      triggerNotification("Failed to route service call.");
+    }
+  };
+
+  const handleAutoOptimizeWaiterAssignments = async () => {
+    try {
+      const activeWaiters = employees.filter(e => 
+        e.hotelId === currentHotelId && 
+        e.branchId === currentBranchId && 
+        e.role === "Waiter" && 
+        e.attendance === "Present"
+      );
+      if (activeWaiters.length === 0) {
+        triggerNotification("Optimization Error: No on-duty, Present waiters found for this branch to optimize.");
+        return;
+      }
+      const currentBranchTables = tables.filter(t => t.hotelId === currentHotelId && t.branchId === currentBranchId);
+      if (currentBranchTables.length === 0) {
+        triggerNotification("Optimization Error: No tables found in the active branch.");
+        return;
+      }
+
+      // Greedy Capacity Load-Balancing Optimization Heuristic
+      // 1. Sort tables in descending order of seating capacity
+      const sortedTables = [...currentBranchTables].sort((a, b) => b.seatingCapacity - a.seatingCapacity);
+      
+      // 2. Track assigned capacity weight per waiter
+      const waiterAssignments: { [waiterId: string]: { capacity: number; tables: string[] } } = {};
+      activeWaiters.forEach(w => {
+        waiterAssignments[w.id] = { capacity: 0, tables: [] };
+      });
+
+      // 3. Greedy distribution to minimize capacity variance
+      for (const table of sortedTables) {
+        let selectedWaiterId = activeWaiters[0].id;
+        let minCap = Infinity;
+        for (const waiter of activeWaiters) {
+          const cap = waiterAssignments[waiter.id].capacity;
+          if (cap < minCap) {
+            minCap = cap;
+            selectedWaiterId = waiter.id;
+          }
+        }
+        waiterAssignments[selectedWaiterId].capacity += table.seatingCapacity;
+        waiterAssignments[selectedWaiterId].tables.push(table.id);
+      }
+
+      // 4. Dispatch batch requests
+      const updatePromises = [];
+      for (const waiterId of Object.keys(waiterAssignments)) {
+        const waiter = activeWaiters.find(w => w.id === waiterId)!;
+        for (const tableId of waiterAssignments[waiterId].tables) {
+          updatePromises.push(
+            fetch(`/api/tables/${tableId}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                assignedWaiterId: waiterId,
+                assignedWaiterName: waiter.name
+              })
+            })
+          );
+        }
+      }
+
+      await Promise.all(updatePromises);
+      triggerNotification("Optimization Successful: Tables balanced across on-duty waiters.");
+      await fetchData();
+    } catch (err) {
+      console.error("Error auto-optimizing waiter assignments:", err);
+      triggerNotification("Failed to run waiter assignment optimization.");
     }
   };
 
@@ -979,7 +1512,20 @@ export default function App() {
   const activeHotel = useMemo(() => hotels.find(h => h.id === currentHotelId) || hotels[0], [hotels, currentHotelId]);
   const activeBranch = useMemo(() => activeHotel?.branches.find(b => b.id === currentBranchId) || activeHotel?.branches[0], [activeHotel, currentBranchId]);
   const hotelTables = useMemo(() => tables.filter(t => t.hotelId === currentHotelId), [tables, currentHotelId]);
-  const hotelMenu = useMemo(() => menuItems.filter(m => m.hotelId === currentHotelId), [menuItems, currentHotelId]);
+  const hotelMenu = useMemo(() => {
+    return menuItems.filter(m => {
+      if (m.hotelId !== currentHotelId) return false;
+      if (activeRole === "Guest" || activeRole === "WaiterCashier" || activeRole === "Kitchen") {
+        if (m.branchAvailability && m.branchAvailability.length > 0) {
+          const activeBranchId = currentBranchId || (activeHotel?.branches[0]?.id);
+          if (activeBranchId) {
+            return m.branchAvailability.includes(activeBranchId);
+          }
+        }
+      }
+      return true;
+    });
+  }, [menuItems, currentHotelId, activeRole, currentBranchId, activeHotel]);
   const hotelOrders = useMemo(() => orders.filter(o => o.hotelId === currentHotelId), [orders, currentHotelId]);
   const activeGuestTable = useMemo(() => tables.find(t => t.id === activeGuestTableId), [tables, activeGuestTableId]);
 
@@ -1019,7 +1565,7 @@ export default function App() {
     return { totalRevenue, totalVolume, avgOrder };
   }, [hotelOrders]);
 
-  const getRevenueTrendData = () => {
+  const revenueTrendData = useMemo(() => {
     const data = [];
     const now = new Date();
     for (let i = 6; i >= 0; i--) {
@@ -1043,10 +1589,6 @@ export default function App() {
       });
     }
     return data;
-  };
-
-  const revenueTrendData = useMemo(() => {
-    return getRevenueTrendData();
   }, [hotelOrders]);
 
   const staffAttendanceData = useMemo(() => {
@@ -1170,6 +1712,359 @@ export default function App() {
     } catch (err) {
       console.error(err);
       triggerNotification("Error exporting revenue statement.");
+    }
+  };
+
+  // Top Performing Dishes calculation
+  const topDishes = useMemo(() => {
+    const completedOrders = hotelOrders.filter(o => o.paymentStatus === "Paid");
+    const dishCounts: { [name: string]: { quantity: number; revenue: number; category: string } } = {};
+    
+    completedOrders.forEach(order => {
+      order.items.forEach(item => {
+        const name = item.name;
+        if (!dishCounts[name]) {
+          const mItem = menuItems.find(m => m.id === item.menuItemId || m.name === name);
+          dishCounts[name] = { 
+            quantity: 0, 
+            revenue: 0, 
+            category: mItem?.category || "Other" 
+          };
+        }
+        dishCounts[name].quantity += item.quantity;
+        dishCounts[name].revenue += item.quantity * item.price;
+      });
+    });
+    
+    return Object.entries(dishCounts)
+      .map(([name, data]) => ({ name, ...data }))
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, 5);
+  }, [hotelOrders, menuItems]);
+
+  // Export current order revenue, volume, and top-performing dishes as a beautiful Swiss-Minimalist PDF report
+  const handleExportPDF = () => {
+    try {
+      const doc = new jsPDF();
+      let y = 15;
+
+      // 1. Top Decorative Bar in Slate/Charcoal
+      doc.setFillColor(34, 34, 34);
+      doc.rect(15, y, 180, 8, "F");
+      y += 18;
+
+      // 2. Title & Branding Block
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(22);
+      // Use active hotel color if available, default to Swiss terracotta Red
+      doc.setTextColor(140, 45, 45); 
+      const hotelTitle = (activeHotel?.name || "Himalayan Operations Hub").toUpperCase();
+      doc.text(hotelTitle, 15, y);
+      y += 6;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(80, 80, 80);
+      doc.text(activeHotel?.tagline || "Dynamic Operations & Culinary Ledger Statement", 15, y);
+      y += 10;
+
+      // Double line separator
+      doc.setLineWidth(1);
+      doc.setDrawColor(34, 34, 34);
+      doc.line(15, y, 195, y);
+      y += 2;
+      doc.setLineWidth(0.2);
+      doc.line(15, y, 195, y);
+      y += 10;
+
+      // 3. Metadata Section
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(34, 34, 34);
+      doc.text("REPORT METADATA & PARAMETERS", 15, y);
+      y += 6;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(60, 60, 60);
+      const todayStr = new Date().toLocaleDateString("en-US", { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const timeStr = new Date().toLocaleTimeString("en-US");
+      doc.text(`Statement Period: Today (${todayStr})`, 15, y);
+      doc.text(`Time Generated: ${timeStr}`, 15, y + 5);
+      doc.text(`SaaS Tenant Domain: ${currentHotelId}.hospitalityos.net`, 15, y + 10);
+      doc.text(`Currency Ledger: ${activeHotel?.currency || "NPR"}`, 15, y + 15);
+      y += 24;
+
+      // 4. Highlight Cards (Revenue, Volume, Average Order Value)
+      const colWidth = 56;
+      const cardHeight = 24;
+
+      // Total Revenue Box
+      doc.setFillColor(245, 245, 245);
+      doc.rect(15, y, colWidth, cardHeight, "F");
+      doc.setDrawColor(220, 220, 220);
+      doc.rect(15, y, colWidth, cardHeight, "S");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(140, 45, 45); // Terracotta Accent
+      doc.text("TOTAL REVENUE (PAID)", 15 + 4, y + 6);
+      doc.setFontSize(13);
+      doc.setTextColor(34, 34, 34);
+      doc.text(`${activeHotel?.currency || "NPR"} ${metrics.totalRevenue.toLocaleString()}`, 15 + 4, y + 16);
+
+      // Order Volume Box
+      doc.setFillColor(245, 245, 245);
+      doc.rect(15 + colWidth + 6, y, colWidth, cardHeight, "F");
+      doc.rect(15 + colWidth + 6, y, colWidth, cardHeight, "S");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(80, 80, 80);
+      doc.text("TOTAL ORDER VOLUME", 15 + colWidth + 6 + 4, y + 6);
+      doc.setFontSize(13);
+      doc.setTextColor(34, 34, 34);
+      doc.text(`${metrics.totalVolume} Placed`, 15 + colWidth + 6 + 4, y + 16);
+
+      // Avg Order Value Box
+      doc.setFillColor(245, 245, 245);
+      doc.rect(15 + (colWidth * 2) + 12, y, colWidth, cardHeight, "F");
+      doc.rect(15 + (colWidth * 2) + 12, y, colWidth, cardHeight, "S");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(80, 80, 80);
+      doc.text("AVG ORDER VALUE", 15 + (colWidth * 2) + 12 + 4, y + 6);
+      doc.setFontSize(13);
+      doc.setTextColor(34, 34, 34);
+      doc.text(`${activeHotel?.currency || "NPR"} ${metrics.avgOrder.toLocaleString()}`, 15 + (colWidth * 2) + 12 + 4, y + 16);
+
+      y += cardHeight + 14;
+
+      // 5. Top-Performing Dishes Table
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(34, 34, 34);
+      doc.text("TOP-PERFORMING DISHES (BY QUANTITY SOLD)", 15, y);
+      y += 6;
+
+      // Table Header
+      doc.setFillColor(34, 34, 34);
+      doc.rect(15, y, 180, 7, "F");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(255, 255, 255);
+      doc.text("Dish/Item Name", 18, y + 5);
+      doc.text("Category", 85, y + 5);
+      doc.text("Quantity Sold", 135, y + 5);
+      doc.text("Revenue Generated", 165, y + 5);
+      y += 7;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(60, 60, 60);
+
+      if (topDishes.length === 0) {
+        doc.text("No transactions processed yet during this shift.", 18, y + 6);
+        y += 10;
+      } else {
+        topDishes.forEach((dish, idx) => {
+          if (idx % 2 === 1) {
+            doc.setFillColor(250, 250, 250);
+            doc.rect(15, y, 180, 7, "F");
+          }
+          doc.setTextColor(34, 34, 34);
+          doc.text(dish.name, 18, y + 5);
+          doc.setTextColor(100, 100, 100);
+          doc.text(dish.category, 85, y + 5);
+          doc.setTextColor(34, 34, 34);
+          doc.text(dish.quantity.toString(), 135, y + 5);
+          doc.text(`${activeHotel?.currency || "NPR"} ${dish.revenue.toLocaleString()}`, 165, y + 5);
+          y += 7;
+        });
+      }
+      y += 12;
+
+      // 6. Audited Order Ledger (Condensed list)
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(34, 34, 34);
+      doc.text("RECENT TRANSACTIONS LEDGER", 15, y);
+      y += 6;
+
+      doc.setFillColor(140, 45, 45); // Terracotta Accent
+      doc.rect(15, y, 180, 7, "F");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(255, 255, 255);
+      doc.text("Order ID", 18, y + 5);
+      doc.text("Table", 50, y + 5);
+      doc.text("Payment Status", 75, y + 5);
+      doc.text("Method", 115, y + 5);
+      doc.text("Total", 145, y + 5);
+      doc.text("Kitchen Status", 170, y + 5);
+      y += 7;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.setTextColor(60, 60, 60);
+
+      const recentOrders = hotelOrders.slice(0, 8); // Show up to 8 recent orders to fit comfortably on 1 page
+      if (recentOrders.length === 0) {
+        doc.text("No transactions available.", 18, y + 6);
+        y += 10;
+      } else {
+        recentOrders.forEach((o, idx) => {
+          if (idx % 2 === 1) {
+            doc.setFillColor(250, 250, 250);
+            doc.rect(15, y, 180, 7, "F");
+          }
+          doc.setTextColor(34, 34, 34);
+          doc.text(o.id.substring(0, 12), 18, y + 5);
+          doc.setTextColor(80, 80, 80);
+          doc.text(`Table ${o.tableNumber}`, 50, y + 5);
+          
+          doc.setTextColor(o.paymentStatus === "Paid" ? 30 : 180, o.paymentStatus === "Paid" ? 120 : 50, o.paymentStatus === "Paid" ? 30 : 50);
+          doc.text(o.paymentStatus, 75, y + 5);
+          
+          doc.setTextColor(80, 80, 80);
+          doc.text(o.paymentMethod || "Cash", 115, y + 5);
+          
+          doc.setTextColor(34, 34, 34);
+          doc.text(`${activeHotel?.currency || "NPR"} ${o.totalAmount.toLocaleString()}`, 145, y + 5);
+          
+          doc.setTextColor(100, 100, 100);
+          doc.text(o.status, 170, y + 5);
+          y += 7;
+        });
+      }
+
+      // 7. Footer Block with Swiss Precision Mark
+      doc.setLineWidth(0.2);
+      doc.setDrawColor(200, 200, 200);
+      doc.line(15, 275, 195, 275);
+
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text("CONFIDENTIAL - AUTOMATED LEDGER SYSTEM STATEMENT", 15, 282);
+      doc.text(`Page 1 of 1 • Generated via SaaS Operational Core`, 132, 282);
+
+      // Save document
+      const docName = `operational_summary_${currentHotelId}_${new Date().toISOString().split('T')[0]}.pdf`;
+      doc.save(docName);
+      triggerNotification(`Corporate PDF report exported successfully as ${docName}.`);
+    } catch (err) {
+      console.error(err);
+      triggerNotification("System error generating jsPDF operational statement.");
+    }
+  };
+
+  // --- Branch Management Handlers ---
+  const handleAddBranch = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!newBranchForm.name.trim()) {
+      triggerNotification("Branch name is required.");
+      return;
+    }
+    try {
+      setSyncStatus("Syncing...");
+      const response = await fetch(`/api/hotels/${currentHotelId}/branches`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newBranchForm)
+      });
+      if (response.ok) {
+        const result = await response.json();
+        triggerNotification(`Branch "${newBranchForm.name}" has been created successfully.`);
+        setNewBranchForm({ 
+          name: "", 
+          location: "", 
+          contactPhone: "", 
+          operatingHours: "09:00 - 22:00", 
+          autoCreateTables: 0 
+        });
+        await fetchData();
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        triggerNotification(errData.error || "Failed to add new branch.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error adding branch.");
+    } finally {
+      setSyncStatus("Synchronized");
+    }
+  };
+
+  const handleUpdateBranch = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editingBranchId) return;
+    if (!editBranchForm.name.trim()) {
+      triggerNotification("Branch name is required.");
+      return;
+    }
+    try {
+      setSyncStatus("Syncing...");
+      const response = await fetch(`/api/hotels/${currentHotelId}/branches/${editingBranchId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editBranchForm)
+      });
+      if (response.ok) {
+        triggerNotification("Branch details updated successfully.");
+        setEditingBranchId(null);
+        setEditBranchForm({ 
+          name: "", 
+          location: "", 
+          contactPhone: "", 
+          operatingHours: "09:00 - 22:00" 
+        });
+        await fetchData();
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        triggerNotification(errData.error || "Failed to update branch.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error updating branch.");
+    } finally {
+      setSyncStatus("Synchronized");
+    }
+  };
+
+  const handleDeleteBranch = async (branchId: string) => {
+    // If the hotel only has 1 branch left, prevent deletion to avoid empty state issues
+    if (activeHotel && activeHotel.branches.length <= 1) {
+      triggerNotification("At least one branch must remain active in the system.");
+      return;
+    }
+    
+    if (!window.confirm("Are you sure you want to permanently delete this branch and all its routing maps?")) {
+      return;
+    }
+
+    try {
+      setSyncStatus("Syncing...");
+      const response = await fetch(`/api/hotels/${currentHotelId}/branches/${branchId}`, {
+        method: "DELETE"
+      });
+      if (response.ok) {
+        triggerNotification("Branch permanently decommissioned.");
+        // If the current active branch is the one we deleted, shift to the remaining first branch
+        if (currentBranchId === branchId && activeHotel) {
+          const remaining = activeHotel.branches.filter(b => b.id !== branchId);
+          if (remaining.length > 0) {
+            setCurrentBranchId(remaining[0].id);
+          }
+        }
+        await fetchData();
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        triggerNotification(errData.error || "Failed to delete branch.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error deleting branch.");
+    } finally {
+      setSyncStatus("Synchronized");
     }
   };
 
@@ -1442,7 +2337,9 @@ export default function App() {
                       className="bg-white border border-swiss-dark text-sm font-mono p-1 mt-0.5 font-bold cursor-pointer"
                     >
                       {activeHotel.branches.map(b => (
-                        <option key={b.id} value={b.id}>{b.name}</option>
+                        <option key={b.id} value={b.id}>
+                          {b.name}{b.status === "PendingApproval" ? " ⏳ (Pending Approval)" : ""}
+                        </option>
                       ))}
                     </select>
                   </div>
@@ -1491,7 +2388,58 @@ export default function App() {
                   <p className="text-sm font-mono text-swiss-dark/70">Platform governance, subscription billing, and hotel onboarding automation.</p>
                 </div>
 
-                {/* BOARDING ENGINE */}
+                {/* SUPER ADMIN PORTAL TABS */}
+                <div className="flex flex-wrap gap-2 border-b border-swiss-dark/20 pb-4 mb-6">
+                  <button
+                    onClick={() => setSuperAdminActiveTab("tenants")}
+                    className={`px-3 py-2 uppercase tracking-tight font-bold cursor-pointer transition-all flex items-center gap-1.5 text-xs font-mono ${
+                      superAdminActiveTab === "tenants" ? "bg-swiss-dark text-white" : "bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark/20"
+                    }`}
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                    👥 Tenants Onboarding
+                  </button>
+                  <button
+                    onClick={() => setSuperAdminActiveTab("branding")}
+                    className={`px-3 py-2 uppercase tracking-tight font-bold cursor-pointer transition-all flex items-center gap-1.5 text-xs font-mono ${
+                      superAdminActiveTab === "branding" ? "bg-swiss-dark text-white" : "bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark/20"
+                    }`}
+                  >
+                    <Sliders className="w-3.5 h-3.5" />
+                    🎨 Brand Customization
+                  </button>
+                  <button
+                    onClick={() => setSuperAdminActiveTab("menu")}
+                    className={`px-3 py-2 uppercase tracking-tight font-bold cursor-pointer transition-all flex items-center gap-1.5 text-xs font-mono ${
+                      superAdminActiveTab === "menu" ? "bg-swiss-dark text-white" : "bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark/20"
+                    }`}
+                  >
+                    <Utensils className="w-3.5 h-3.5" />
+                    🍽️ Menu Catalogue
+                  </button>
+                  <button
+                    onClick={() => setSuperAdminActiveTab("analytics")}
+                    className={`px-3 py-2 uppercase tracking-tight font-bold cursor-pointer transition-all flex items-center gap-1.5 text-xs font-mono ${
+                      superAdminActiveTab === "analytics" ? "bg-swiss-dark text-white" : "bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark/20"
+                    }`}
+                  >
+                    <LucideLineChart className="w-3.5 h-3.5" />
+                    📊 Multi-Branch Analytics
+                  </button>
+                  <button
+                    onClick={() => setSuperAdminActiveTab("branches")}
+                    className={`px-3 py-2 uppercase tracking-tight font-bold cursor-pointer transition-all flex items-center gap-1.5 text-xs font-mono ${
+                      superAdminActiveTab === "branches" ? "bg-swiss-dark text-white" : "bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark/20"
+                    }`}
+                  >
+                    <Building2 className="w-3.5 h-3.5" />
+                    🏢 Branch Governance
+                  </button>
+                </div>
+
+                {superAdminActiveTab === "tenants" && (
+                  <div className="space-y-8 animate-fadeIn">
+                    {/* BOARDING ENGINE */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <div className="bg-white border-2 border-swiss-dark p-6">
                     <h3 className="text-lg font-bold uppercase tracking-tight mb-4 pb-2 border-b border-swiss-dark">Onboard New Subscriber</h3>
@@ -1694,9 +2642,13 @@ export default function App() {
                     <span className="text-[10px] block mt-1 text-swiss-dark/60">Autonomous QR Provisioning</span>
                   </div>
                 </div>
+              </div>
+            )}
 
-                {/* TENANT BRAND CUSTOMIZATION & COLOR SYSTEM HUB */}
-                <div className="bg-white border-2 border-swiss-dark p-6 space-y-6">
+              {superAdminActiveTab === "branding" && (
+                <div className="space-y-8 animate-fadeIn">
+                  {/* TENANT BRAND CUSTOMIZATION & COLOR SYSTEM HUB */}
+                  <div className="bg-white border-2 border-swiss-dark p-6 space-y-6">
                   <div>
                     <h3 className="text-lg font-bold uppercase tracking-tight">Tenant Brand Customization Control</h3>
                     <p className="text-xs text-swiss-dark/70 font-mono">Assign and persist custom primaryColor, secondaryColor, and corporate typography font settings for individual hotel properties.</p>
@@ -1742,6 +2694,31 @@ export default function App() {
                           placeholder="e.g. Traditional Nepali Fine Gastronomy"
                           className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none focus:border-terracotta"
                         />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-1 border-t border-dashed border-swiss-dark/20">
+                        <div>
+                          <label className="block font-bold mb-1 uppercase text-[10px] text-terracotta">Portal Username</label>
+                          <input
+                            type="text"
+                            required
+                            value={customizerUsername}
+                            onChange={(e) => setCustomizerUsername(e.target.value)}
+                            placeholder="username"
+                            className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none focus:border-terracotta font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-bold mb-1 uppercase text-[10px] text-terracotta">Portal Password</label>
+                          <input
+                            type="text"
+                            required
+                            value={customizerPassword}
+                            onChange={(e) => setCustomizerPassword(e.target.value)}
+                            placeholder="password"
+                            className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none focus:border-terracotta font-bold text-blue-700"
+                          />
+                        </div>
                       </div>
                     </div>
 
@@ -1860,7 +2837,11 @@ export default function App() {
                     </div>
                   </form>
                 </div>
+              </div>
+            )}
 
+            {superAdminActiveTab === "menu" && (
+              <div className="space-y-8 animate-fadeIn">
                 {/* PLATFORM MENU GOVERNANCE HUB */}
                 <div className="bg-white border-2 border-swiss-dark p-6 space-y-6">
                   <div className="border-b border-swiss-dark pb-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
@@ -2026,6 +3007,519 @@ export default function App() {
               </div>
             )}
 
+            {superAdminActiveTab === "analytics" && (
+              <div className="space-y-6 animate-fadeIn">
+                {/* HOTEL SELECTOR */}
+                <div className="bg-white border-2 border-swiss-dark p-6">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div>
+                      <h3 className="text-lg font-bold uppercase tracking-tight">Multi-Branch Performance Analytics</h3>
+                      <p className="text-xs text-swiss-dark/70 font-mono mt-1">Select a subscribed hotel property to view branch distribution, real-time workload balancing, and comparative sales.</p>
+                    </div>
+                    <div className="font-mono text-xs w-full md:w-auto">
+                      <label className="block font-bold mb-1 uppercase text-terracotta">Analyze Subscribed Hotel</label>
+                      <select
+                        value={superAdminMultiBranchHotelId || (hotels.length ? hotels[0].id : "")}
+                        onChange={(e) => setSuperAdminMultiBranchHotelId(e.target.value)}
+                        className="bg-swiss-light border border-swiss-dark p-2 text-swiss-dark font-bold w-full md:w-72 cursor-pointer text-xs"
+                      >
+                        <option value="">-- Select Property to Analyze --</option>
+                        {hotels.map(h => (
+                          <option key={h.id} value={h.id}>
+                            {h.name} ({h.branches.length} Branches, {h.plan} Plan)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {(() => {
+                  const selectedId = superAdminMultiBranchHotelId || (hotels.length ? hotels[0].id : "");
+                  const selectedHotel = hotels.find(h => h.id === selectedId);
+                  if (!selectedHotel) {
+                    return (
+                      <div className="border border-dashed border-swiss-dark p-12 text-center text-swiss-dark/50 italic font-mono text-xs bg-white">
+                        Please select a hotel tenant from the dropdown above to boot branch analytics.
+                      </div>
+                    );
+                  }
+
+                  // Gather hotel data
+                  const hotelBranches = selectedHotel.branches || [];
+                  const hotelTables = tables.filter(t => t.hotelId === selectedId);
+                  const hotelEmployees = employees.filter(e => e.hotelId === selectedId);
+                  const hotelOrdersList = orders.filter(o => o.hotelId === selectedId);
+                  const hotelServiceCalls = serviceCalls.filter(s => s.hotelId === selectedId);
+
+                  // Overall stats
+                  const completedOrders = hotelOrdersList.filter(o => o.status === "Served" || o.status === "Completed" || o.paymentStatus === "Paid");
+                  const totalRevenue = completedOrders.reduce((sum, o) => sum + o.totalAmount, 0);
+                  const pendingOrdersCount = hotelOrdersList.filter(o => ["Received", "Accepted", "Preparing", "Ready"].includes(o.status)).length;
+                  const activeCallsCount = hotelServiceCalls.filter(c => c.status === "Pending").length;
+
+                  // Branch comparative data for Recharts
+                  const branchData = hotelBranches.map(branch => {
+                    const branchOrders = hotelOrdersList.filter(o => o.branchId === branch.id);
+                    const completedBranchOrders = branchOrders.filter(o => o.status === "Served" || o.status === "Completed" || o.paymentStatus === "Paid");
+                    const revenue = completedBranchOrders.reduce((sum, o) => sum + o.totalAmount, 0);
+                    const branchTables = hotelTables.filter(t => t.branchId === branch.id).length;
+                    const branchStaff = hotelEmployees.filter(e => e.branchId === branch.id).length;
+                    const pendingOrders = branchOrders.filter(o => ["Received", "Accepted", "Preparing", "Ready"].includes(o.status)).length;
+                    const unresolvedCalls = hotelServiceCalls.filter(c => c.branchId === branch.id && c.status === "Pending").length;
+
+                    return {
+                      name: branch.name,
+                      revenue,
+                      ordersCount: branchOrders.length,
+                      pendingOrders,
+                      unresolvedCalls,
+                      tables: branchTables,
+                      staffCount: branchStaff
+                    };
+                  });
+
+                  return (
+                    <div className="space-y-6">
+                      {/* KPI GRID */}
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 font-mono text-xs">
+                        <div className="bg-white p-4 border-2 border-swiss-dark shadow-sm">
+                          <span className="text-swiss-dark/60 block uppercase font-bold text-[10px]">Consolidated Sales</span>
+                          <span className="text-xl font-bold text-swiss-dark block mt-1">NPR {totalRevenue.toLocaleString()}</span>
+                          <span className="text-[10px] text-emerald-600 block mt-1 font-semibold">From {completedOrders.length} Completed Orders</span>
+                        </div>
+                        <div className="bg-white p-4 border-2 border-swiss-dark shadow-sm">
+                          <span className="text-swiss-dark/60 block uppercase font-bold text-[10px]">Active Infrastructure</span>
+                          <span className="text-xl font-bold text-swiss-dark block mt-1">{hotelBranches.length} Branches</span>
+                          <span className="text-[10px] text-swiss-dark/60 block mt-1">{hotelTables.length} QR Code Terminals</span>
+                        </div>
+                        <div className="bg-white p-4 border-2 border-swiss-dark shadow-sm">
+                          <span className="text-swiss-dark/60 block uppercase font-bold text-[10px]">Combined Staff Force</span>
+                          <span className="text-xl font-bold text-swiss-dark block mt-1">{hotelEmployees.length} Personnel</span>
+                          <span className="text-[10px] text-swiss-dark/60 block mt-1">Multi-branch roster enabled</span>
+                        </div>
+                        <div className="bg-white p-4 border-2 border-swiss-dark shadow-sm">
+                          <span className="text-swiss-dark/60 block uppercase font-bold text-[10px]">Active Backlog</span>
+                          <span className="text-xl font-bold text-terracotta block mt-1">
+                            {pendingOrdersCount} Orders / {activeCallsCount} Calls
+                          </span>
+                          <span className="text-[10px] text-swiss-dark/60 block mt-1">Live queue workload</span>
+                        </div>
+                      </div>
+
+                      {/* COMPARATIVE CHARTS */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* CHART 1: BRANCH REVENUE */}
+                        <div className="bg-white border-2 border-swiss-dark p-6 shadow-sm">
+                          <div className="border-b border-swiss-dark pb-2 mb-4">
+                            <h4 className="text-sm font-bold uppercase tracking-tight font-mono text-swiss-dark">
+                              Branch Revenue Comparative (NPR)
+                            </h4>
+                          </div>
+                          <div className="h-64">
+                            {branchData.length > 0 ? (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={branchData}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                                  <XAxis dataKey="name" stroke="#1E1A17" fontSize={10} fontFamily="JetBrains Mono" />
+                                  <YAxis stroke="#1E1A17" fontSize={10} fontFamily="JetBrains Mono" />
+                                  <Tooltip 
+                                    contentStyle={{ backgroundColor: "#FFFFFF", borderColor: "#1E1A17", fontFamily: "JetBrains Mono", fontSize: 11 }}
+                                    formatter={(value: any) => [`NPR ${value}`, "Revenue"]}
+                                  />
+                                  <Bar dataKey="revenue" fill="#C96A4A" radius={[2, 2, 0, 0]} />
+                                </BarChart>
+                              </ResponsiveContainer>
+                            ) : (
+                              <div className="flex items-center justify-center h-full text-swiss-dark/50 font-mono text-xs">
+                                No branch data available for chart.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* CHART 2: STAFF & TABLES DISTRIBUTION */}
+                        <div className="bg-white border-2 border-swiss-dark p-6 shadow-sm">
+                          <div className="border-b border-swiss-dark pb-2 mb-4">
+                            <h4 className="text-sm font-bold uppercase tracking-tight font-mono text-swiss-dark">
+                              Operational Footprint (Personnel & QR Tables)
+                            </h4>
+                          </div>
+                          <div className="h-64">
+                            {branchData.length > 0 ? (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={branchData}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                                  <XAxis dataKey="name" stroke="#1E1A17" fontSize={10} fontFamily="JetBrains Mono" />
+                                  <YAxis stroke="#1E1A17" fontSize={10} fontFamily="JetBrains Mono" />
+                                  <Tooltip 
+                                    contentStyle={{ backgroundColor: "#FFFFFF", borderColor: "#1E1A17", fontFamily: "JetBrains Mono", fontSize: 11 }}
+                                  />
+                                  <Legend wrapperStyle={{ fontSize: 10, fontFamily: "JetBrains Mono" }} />
+                                  <Bar dataKey="staffCount" name="Personnel Profiles" fill="#1E1A17" radius={[2, 2, 0, 0]} />
+                                  <Bar dataKey="tables" name="QR Tables" fill="#EEDC82" radius={[2, 2, 0, 0]} />
+                                </BarChart>
+                              </ResponsiveContainer>
+                            ) : (
+                              <div className="flex items-center justify-center h-full text-swiss-dark/50 font-mono text-xs">
+                                No branch data available for chart.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* REGIONAL BRANCH REGISTRY GRID */}
+                      <div className="bg-white border-2 border-swiss-dark p-6 shadow-sm">
+                        <div className="border-b border-swiss-dark pb-2 mb-4">
+                          <h4 className="text-sm font-bold uppercase tracking-tight font-mono text-swiss-dark">
+                            Live Branch Operational Backlog & Density Registry
+                          </h4>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="w-full font-mono text-[11px] text-left border-collapse">
+                            <thead>
+                              <tr className="bg-swiss-gray border-b border-swiss-dark">
+                                <th className="p-3">Branch / Location</th>
+                                <th className="p-3">Table Count</th>
+                                <th className="p-3">Staff Strength</th>
+                                <th className="p-3">Total Orders (Lifetime)</th>
+                                <th className="p-3">Live Queues</th>
+                                <th className="p-3">Branch Sales (NPR)</th>
+                                <th className="p-3 text-right">Operational Status</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {branchData.map((b, i) => {
+                                const actualBranchObj = hotelBranches[i];
+                                return (
+                                  <tr key={b.name} className="border-b border-swiss-gray hover:bg-swiss-light">
+                                    <td className="p-3 font-sans">
+                                      <div className="font-bold text-swiss-dark text-sm">{b.name}</div>
+                                      <div className="text-[10px] text-swiss-dark/60 font-mono mt-0.5">📍 {actualBranchObj?.location || "Main Venue"}</div>
+                                      <div className="text-[8px] bg-swiss-dark text-sand px-1 py-0.25 font-mono inline-block mt-1">ID: {actualBranchObj?.id}</div>
+                                    </td>
+                                    <td className="p-3 font-mono">{b.tables} QR Terminals</td>
+                                    <td className="p-3 font-mono">{b.staffCount} Staff</td>
+                                    <td className="p-3 font-mono">{b.ordersCount} Received</td>
+                                    <td className="p-3 font-mono">
+                                      <span className={`font-bold ${b.pendingOrders > 0 ? "text-terracotta" : "text-swiss-dark/50"}`}>
+                                        {b.pendingOrders} Orders
+                                      </span>
+                                      <span className="text-swiss-dark/40 mx-1.5">|</span>
+                                      <span className={`font-bold ${b.unresolvedCalls > 0 ? "text-blue-600" : "text-swiss-dark/50"}`}>
+                                        {b.unresolvedCalls} Calls
+                                      </span>
+                                    </td>
+                                    <td className="p-3 font-bold font-mono">NPR {b.revenue.toLocaleString()}</td>
+                                    <td className="p-3 text-right">
+                                      <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-50 border border-emerald-300 text-emerald-800 px-2 py-0.5 font-bold uppercase tracking-wider">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                                        Operational
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                              {branchData.length === 0 && (
+                                <tr>
+                                  <td colSpan={7} className="p-6 text-center text-swiss-dark/50 italic">
+                                    No branches are currently provisioned for this tenant. Add branches in Hotel Admin portal under "Branches & Venues" to enable multi-branch telemetry.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* REAL-TIME OPERATIONS MONITOR MAP */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 font-mono text-xs">
+                        {/* Left Side: Consolidated Orders List */}
+                        <div className="bg-white border-2 border-swiss-dark p-6 shadow-sm">
+                          <div className="border-b border-swiss-dark pb-2 mb-4 flex justify-between items-center">
+                            <h4 className="text-sm font-bold uppercase tracking-tight text-swiss-dark">
+                              Real-Time Combined Order Log
+                            </h4>
+                            <span className="bg-swiss-light border border-swiss-dark px-2 py-0.5 text-[10px]">
+                              {hotelOrdersList.length} total orders
+                            </span>
+                          </div>
+                          <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                            {hotelOrdersList.slice().reverse().map(o => {
+                              const branchName = hotelBranches.find(b => b.id === o.branchId)?.name || "Main";
+                              return (
+                                <div key={o.id} className="p-3 bg-swiss-light/40 border border-swiss-dark/20 hover:border-swiss-dark/50 transition-all">
+                                  <div className="flex justify-between items-start gap-1">
+                                    <div>
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="font-bold text-swiss-dark">Order #{o.id.slice(-4).toUpperCase()}</span>
+                                        <span className="bg-swiss-dark text-sand text-[8px] font-bold px-1.5 uppercase">
+                                          🏢 {branchName}
+                                        </span>
+                                        <span className="text-swiss-dark/60 text-[9px]">Table {o.tableNumber}</span>
+                                      </div>
+                                      <p className="text-[10px] text-swiss-dark/70 mt-1 leading-normal">
+                                        {o.items.map(it => `${it.quantity}x ${it.name}`).join(", ")}
+                                      </p>
+                                    </div>
+                                    <div className="text-right shrink-0">
+                                      <span className="font-bold text-swiss-dark block">NPR {o.totalAmount}</span>
+                                      <span className={`text-[9px] font-black uppercase inline-block mt-1 px-1.5 py-0.25 ${
+                                        o.status === "Served" || o.status === "Completed"
+                                          ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                                          : o.status === "Cancelled"
+                                          ? "bg-rose-100 text-rose-800 border border-rose-300"
+                                          : "bg-amber-100 text-amber-800 border border-amber-300 animate-pulse"
+                                      }`}>
+                                        {o.status}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {hotelOrdersList.length === 0 && (
+                              <div className="text-center italic text-swiss-dark/40 py-12">
+                                No live orders have been recorded across hotel branches.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Right Side: Consolidated Service Calls Log */}
+                        <div className="bg-white border-2 border-swiss-dark p-6 shadow-sm">
+                          <div className="border-b border-swiss-dark pb-2 mb-4 flex justify-between items-center">
+                            <h4 className="text-sm font-bold uppercase tracking-tight text-swiss-dark">
+                              Real-Time Service Desk Dispatch
+                            </h4>
+                            <span className="bg-swiss-light border border-swiss-dark px-2 py-0.5 text-[10px]">
+                              {hotelServiceCalls.length} calls logged
+                            </span>
+                          </div>
+                          <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                            {hotelServiceCalls.slice().reverse().map(c => {
+                              const branchName = hotelBranches.find(b => b.id === c.branchId)?.name || "Main";
+                              return (
+                                <div key={c.id} className="p-3 bg-swiss-light/40 border border-swiss-dark/20 hover:border-swiss-dark/50 transition-all">
+                                  <div className="flex justify-between items-start gap-1">
+                                    <div>
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="font-bold text-swiss-dark">🔔 {c.type}</span>
+                                        <span className="bg-swiss-dark text-sand text-[8px] font-bold px-1.5 uppercase">
+                                          🏢 {branchName}
+                                        </span>
+                                        <span className="text-swiss-dark/60 text-[9px]">Table {c.tableNumber}</span>
+                                      </div>
+                                      <p className="text-[10px] text-swiss-dark/50 mt-1">
+                                        Created: {new Date(c.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                      </p>
+                                    </div>
+                                    <div className="text-right shrink-0">
+                                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.25 ${
+                                        c.status === "Resolved"
+                                          ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                                          : "bg-rose-100 text-rose-800 border border-rose-300 animate-pulse"
+                                      }`}>
+                                        {c.status}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {hotelServiceCalls.length === 0 && (
+                              <div className="text-center italic text-swiss-dark/40 py-12">
+                                No service calls logged across hotel branches.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {superAdminActiveTab === "branches" && (
+              <div className="space-y-6 animate-fadeIn">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  
+                  {/* LEFT PANEL: PROVISION NEW BRANCH DIRECTLY */}
+                  <div className="bg-white border-2 border-swiss-dark p-6 font-mono text-xs">
+                    <h3 className="text-base font-bold uppercase tracking-tight text-terracotta mb-2 pb-1 border-b border-swiss-dark">
+                      Directly Provision Branch
+                    </h3>
+                    <p className="text-[10px] text-swiss-dark/70 mb-4 leading-normal">
+                      Bypasses standard tenant approval queues. Directly allocates, authorizes, and activates new branches for any onboarded subscriber immediately.
+                    </p>
+                    
+                    <form onSubmit={handleSuperAdminProvisionBranch} className="space-y-4">
+                      <div>
+                        <label className="block font-bold mb-1 uppercase text-[10px]">Target Hotel Tenant</label>
+                        <select
+                          value={superAdminNewBranchHotelId}
+                          onChange={(e) => setSuperAdminNewBranchHotelId(e.target.value)}
+                          className="w-full bg-white border border-swiss-dark p-2 text-swiss-dark focus:outline-none focus:border-terracotta cursor-pointer font-bold"
+                          required
+                        >
+                          <option value="">-- Choose SaaS Subscriber --</option>
+                          {hotels.map((h) => (
+                            <option key={h.id} value={h.id}>
+                              🏢 {h.name} ({h.branches?.length || 0} active branches)
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1 uppercase text-[10px]">Branch Name</label>
+                        <input 
+                          type="text" 
+                          required
+                          value={superAdminNewBranchName}
+                          onChange={(e) => setSuperAdminNewBranchName(e.target.value)}
+                          placeholder="e.g. Pokhara Central"
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none focus:border-terracotta"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1 uppercase text-[10px]">Location Address</label>
+                        <input 
+                          type="text" 
+                          value={superAdminNewBranchLocation}
+                          onChange={(e) => setSuperAdminNewBranchLocation(e.target.value)}
+                          placeholder="e.g. Pokhara Lake Side"
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none focus:border-terracotta"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1 uppercase text-[10px]">Contact Phone</label>
+                        <input 
+                          type="text" 
+                          value={superAdminNewBranchContact}
+                          onChange={(e) => setSuperAdminNewBranchContact(e.target.value)}
+                          placeholder="e.g. +977-61-460000"
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none focus:border-terracotta"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1 uppercase text-[10px]">Operating Hours</label>
+                        <input 
+                          type="text" 
+                          value={superAdminNewBranchHours}
+                          onChange={(e) => setSuperAdminNewBranchHours(e.target.value)}
+                          placeholder="e.g. 09:00 - 22:00"
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none focus:border-terracotta"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1 uppercase text-[10px] text-terracotta">⚡ QR Table Template Quick-Start</label>
+                        <select
+                          value={superAdminNewBranchTables}
+                          onChange={(e) => setSuperAdminNewBranchTables(Number(e.target.value))}
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none cursor-pointer font-bold"
+                        >
+                          <option value={0}>❌ No initial tables (Create manually)</option>
+                          <option value={4}>🆕 Auto-generate 4 Standard Tables</option>
+                          <option value={8}>🆕 Auto-generate 8 Standard Tables</option>
+                          <option value={12}>🆕 Auto-generate 12 Standard Tables</option>
+                          <option value={16}>🆕 Auto-generate 16 Standard Tables</option>
+                        </select>
+                      </div>
+                      <button 
+                        type="submit"
+                        className="w-full bg-terracotta hover:bg-swiss-dark text-white p-2.5 font-bold uppercase transition-all tracking-wider cursor-pointer border-none text-[10px]"
+                      >
+                        Directly Provision & Activate
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* RIGHT COLUMN: BRANCH APPROVAL REQUEST QUEUE */}
+                  <div className="lg:col-span-2 space-y-4 font-mono text-xs">
+                    <div className="bg-white border-2 border-swiss-dark p-6">
+                      <h3 className="text-base font-bold uppercase tracking-tight text-swiss-dark mb-2 pb-1 border-b border-swiss-dark">
+                        SaaS Tenant Branch Approval Queue
+                      </h3>
+                      <p className="text-[10px] text-swiss-dark/70 mb-4 leading-normal">
+                        Active listing of newly requested branches added by tenant owners (Hotel/Restaurant Admins). Platform verification is required before operational databases and menus map online.
+                      </p>
+
+                      <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
+                        {(() => {
+                          const pendingList: { hotel: any; branch: any }[] = [];
+                          hotels.forEach((h) => {
+                            if (h.branches) {
+                              h.branches.forEach((b) => {
+                                if (b.status === "PendingApproval") {
+                                  pendingList.push({ hotel: h, branch: b });
+                                }
+                              });
+                            }
+                          });
+
+                          if (pendingList.length === 0) {
+                            return (
+                              <div className="border border-dashed border-swiss-dark p-12 text-center text-swiss-dark/50 italic bg-swiss-light/20">
+                                🎉 No pending branch approval requests currently in queue! All SaaS venues are fully synchronized.
+                              </div>
+                            );
+                          }
+
+                          return pendingList.map(({ hotel, branch }) => (
+                            <div 
+                              key={`${hotel.id}-${branch.id}`} 
+                              className="p-4 border-2 border-amber-500 bg-amber-50/20 hover:bg-amber-50/50 transition-all flex flex-col md:flex-row justify-between items-start md:items-center gap-4"
+                            >
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="bg-amber-500 text-white text-[9px] font-black uppercase px-2 py-0.5 tracking-wider">
+                                    Pending Approval
+                                  </span>
+                                  <span className="font-bold text-swiss-dark/80 text-xs">
+                                    🏢 {hotel.name}
+                                  </span>
+                                </div>
+                                <h4 className="text-sm font-black text-swiss-dark font-sans uppercase pt-1">
+                                  📍 {branch.name}
+                                </h4>
+                                <div className="text-[10px] text-swiss-dark/70 space-y-0.5 font-mono">
+                                  <div>Address: <strong className="text-swiss-dark">{branch.location || "N/A"}</strong></div>
+                                  <div>Contact: <strong className="text-swiss-dark">{branch.contactPhone || "N/A"}</strong> | Hours: <strong className="text-swiss-dark">{branch.operatingHours || "N/A"}</strong></div>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 w-full md:w-auto justify-end shrink-0">
+                                <button
+                                  onClick={() => handleApproveBranch(hotel.id, branch.id, branch.name)}
+                                  className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-950 text-white font-bold text-[10px] uppercase cursor-pointer border-none shadow-sm flex items-center gap-1 transition-colors animate-pulse"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  Approve & Activate
+                                </button>
+                                <button
+                                  onClick={() => handleRejectBranch(hotel.id, branch.id, branch.name)}
+                                  className="px-3 py-1.5 bg-rose-700 hover:bg-rose-950 text-white font-bold text-[10px] uppercase cursor-pointer border-none shadow-sm flex items-center gap-1 transition-colors"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  Reject Request
+                                </button>
+                              </div>
+                            </div>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
             {/* 2. PORTAL: HOTEL ADMIN (OWNER/MANAGER) */}
             {activeRole === "HotelAdmin" && loggedInHotelId !== null && (
               <div className="space-y-8 animate-fadeIn">
@@ -2039,13 +3533,22 @@ export default function App() {
                       SaaS Host ID: <span className="font-bold text-swiss-dark">{currentHotelId}</span>
                     </div>
                     {hasModule("Reports") && (
-                      <button
-                        onClick={handleExportCSV}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-800 hover:bg-emerald-950 text-white font-mono font-bold uppercase text-[10px] tracking-wider transition-colors cursor-pointer border border-emerald-950 shadow-sm"
-                      >
-                        <Download className="w-3 h-3" />
-                        Export Revenue CSV
-                      </button>
+                      <div className="flex gap-2 flex-wrap">
+                        <button
+                          onClick={handleExportCSV}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-800 hover:bg-emerald-950 text-white font-mono font-bold uppercase text-[10px] tracking-wider transition-colors cursor-pointer border border-emerald-950 shadow-sm"
+                        >
+                          <Download className="w-3 h-3" />
+                          Export Revenue CSV
+                        </button>
+                        <button
+                          onClick={handleExportPDF}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-terracotta hover:bg-swiss-dark text-white font-mono font-bold uppercase text-[10px] tracking-wider transition-colors cursor-pointer border border-swiss-dark shadow-sm"
+                        >
+                          <FileText className="w-3 h-3" />
+                          Export PDF Summary
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2119,6 +3622,15 @@ export default function App() {
                   >
                     <Bed className="w-3.5 h-3.5" />
                     🏨 Rooms & Cleaning {!hasModule("Hotel Rooms") && "🔒"}
+                  </button>
+                  <button
+                    onClick={() => setAdminActiveTab("branches")}
+                    className={`px-3 py-2 uppercase tracking-tight font-bold cursor-pointer transition-all flex items-center gap-1.5 ${
+                      adminActiveTab === "branches" ? "bg-swiss-dark text-white" : "bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark/20"
+                    }`}
+                  >
+                    <Building2 className="w-3.5 h-3.5" />
+                    🏢 Branches & Venues
                   </button>
                 </div>
 
@@ -2206,6 +3718,77 @@ export default function App() {
                     </div>
                     <div className="mt-2 text-[10px] text-swiss-dark/60 text-right">
                       Hover over data points to review daily transactions and gross earnings.
+                    </div>
+                  </div>
+                )}
+
+                {/* TOP DISHES & POPULAR PRODUCTS ANALYTICS */}
+                {hasModule("Reports") && (
+                  <div className="bg-white border-2 border-swiss-dark p-6 font-mono">
+                    <div className="flex justify-between items-center mb-4 pb-2 border-b border-swiss-dark">
+                      <h3 className="text-sm font-bold uppercase text-swiss-dark flex items-center gap-2">
+                        <Utensils className="w-4 h-4 text-terracotta" />
+                        Today's Top-Performing Dishes
+                      </h3>
+                      <span className="text-[10px] bg-swiss-light border border-swiss-dark px-2 py-0.5 text-swiss-dark font-bold">
+                        SALES LEADERBOARD
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {/* Left side: List / Table */}
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="bg-swiss-dark text-white uppercase text-[10px] font-mono">
+                              <th className="p-2">Rank</th>
+                              <th className="p-2">Dish / Item</th>
+                              <th className="p-2">Category</th>
+                              <th className="p-2 text-center">Qty Sold</th>
+                              <th className="p-2 text-right">Revenue</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {topDishes.length === 0 ? (
+                              <tr>
+                                <td colSpan={5} className="p-4 text-center text-swiss-dark/50 italic">
+                                  No orders processed yet today.
+                                </td>
+                              </tr>
+                            ) : (
+                              topDishes.map((dish, idx) => (
+                                <tr key={dish.name} className="border-b border-swiss-dark/10 hover:bg-swiss-light transition-colors">
+                                  <td className="p-2 font-bold text-terracotta">#{idx + 1}</td>
+                                  <td className="p-2 font-bold text-swiss-dark">{dish.name}</td>
+                                  <td className="p-2 text-swiss-dark/70">{dish.category}</td>
+                                  <td className="p-2 text-center font-bold">{dish.quantity}</td>
+                                  <td className="p-2 text-right font-bold text-emerald-800">
+                                    {activeHotel?.currency || "NPR"} {dish.revenue.toLocaleString()}
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Right side: Explanatory / Mini-Insights box */}
+                      <div className="bg-sand-light p-4 border border-swiss-dark flex flex-col justify-between">
+                        <div>
+                          <span className="text-[10px] font-bold text-swiss-dark/50 uppercase block mb-1">Culinary Insights</span>
+                          <h4 className="font-bold text-sm text-swiss-dark mb-2">Demand Peak Performance</h4>
+                          <p className="text-xs text-swiss-dark/80 leading-relaxed mb-4">
+                            These dishes reflect completed, fully paid orders across all active tables and digital guest checkouts. Keep menus balanced and ensure correct prep times are set in the system to maintain optimal high-density kitchen routing.
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleExportPDF}
+                          className="w-full bg-swiss-dark hover:bg-terracotta text-white font-bold uppercase text-[11px] py-2 transition-colors cursor-pointer border-none flex items-center justify-center gap-2"
+                        >
+                          <FileText className="w-4 h-4" />
+                          Download PDF Summary Report
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2778,6 +4361,305 @@ export default function App() {
 
                 </div>
 
+                {/* 📅 BRANCH WEEKLY SHIFT PLANNER & COST TRACKER */}
+                <div id="weekly-scheduler-section" className="bg-white border-2 border-swiss-dark p-6 space-y-6">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-swiss-dark">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-5 h-5 text-terracotta" />
+                        <h3 className="text-base font-black uppercase tracking-tight">Hotel Branch Weekly Scheduler & Shift Planner</h3>
+                      </div>
+                      <p className="text-xs font-mono text-swiss-dark/70 mt-1">
+                        Assign weekly shifts (Monday - Sunday) for staff members, configure hourly rates, and track dynamic labor expenditure ratios.
+                      </p>
+                    </div>
+                    {/* Branch switcher dropdown/tabs */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[10px] font-mono font-bold text-swiss-dark/60 uppercase">Select Active Branch:</span>
+                      <div className="flex gap-1 border border-swiss-dark p-1 bg-swiss-light">
+                        {(activeHotel?.branches || []).map(branch => (
+                          <button
+                            key={branch.id}
+                            type="button"
+                            onClick={() => setCurrentBranchId(branch.id)}
+                            className={`px-3 py-1 font-mono text-[10px] font-bold uppercase transition-all cursor-pointer ${
+                              currentBranchId === branch.id 
+                                ? "bg-swiss-dark text-white" 
+                                : "hover:bg-swiss-gray text-swiss-dark"
+                            }`}
+                          >
+                            {branch.name.split(' ')[0]} {/* short name */}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Visual Scheduling Table */}
+                  <div className="overflow-x-auto border border-swiss-dark font-mono text-[11px]">
+                    <table className="w-full border-collapse bg-white">
+                      <thead>
+                        <tr className="bg-swiss-dark text-white uppercase text-[9px] tracking-wider">
+                          <th className="border border-swiss-dark p-2.5 text-left min-w-[160px]">Staff Member & Role</th>
+                          <th className="border border-swiss-dark p-2 text-center min-w-[120px]">Monday</th>
+                          <th className="border border-swiss-dark p-2 text-center min-w-[120px]">Tuesday</th>
+                          <th className="border border-swiss-dark p-2 text-center min-w-[120px]">Wednesday</th>
+                          <th className="border border-swiss-dark p-2 text-center min-w-[120px]">Thursday</th>
+                          <th className="border border-swiss-dark p-2 text-center min-w-[120px]">Friday</th>
+                          <th className="border border-swiss-dark p-2 text-center min-w-[120px]">Saturday</th>
+                          <th className="border border-swiss-dark p-2 text-center min-w-[120px]">Sunday</th>
+                          <th className="border border-swiss-dark p-2 text-center">Weekly Hours</th>
+                          <th className="border border-swiss-dark p-2 text-right">Proj. Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {employees
+                          .filter(e => e.hotelId === currentHotelId && e.branchId === currentBranchId)
+                          .map((emp) => {
+                            const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+                            let totalEmpHours = 0;
+                            days.forEach(day => {
+                              const shift = emp.weeklyShifts?.[day] || (day !== "Saturday" && day !== "Sunday" ? emp.schedule : "Off");
+                              totalEmpHours += getShiftHours(shift);
+                            });
+                            const totalEmpCost = totalEmpHours * (emp.hourlyRate || 200);
+
+                            return (
+                              <tr key={emp.id} className="hover:bg-swiss-light transition-colors">
+                                <td className="border border-swiss-dark p-2.5">
+                                  <div className="font-bold text-swiss-dark text-xs">{emp.name}</div>
+                                  <div className="text-[10px] text-terracotta uppercase font-bold">{emp.role}</div>
+                                  {/* Rate edit inline input with elegant UX */}
+                                  <div className="flex items-center gap-1 mt-1.5 bg-neutral-100 p-1 border border-swiss-gray max-w-[140px]">
+                                    <span className="text-[8px] text-neutral-400 uppercase font-black">RATE ({activeHotel?.currency || "NPR"}):</span>
+                                    <input
+                                      type="number"
+                                      defaultValue={emp.hourlyRate || 200}
+                                      onBlur={(e) => handleUpdateEmployeeRate(emp.id, Number(e.target.value))}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          handleUpdateEmployeeRate(emp.id, Number(e.currentTarget.value));
+                                          e.currentTarget.blur();
+                                        }
+                                      }}
+                                      className="w-12 bg-white border border-swiss-gray px-1 text-center font-bold text-[10px] focus:outline-none"
+                                      title="Type and press Enter or tab out to update"
+                                    />
+                                  </div>
+                                </td>
+                                {days.map((day) => {
+                                  const currentShift = emp.weeklyShifts?.[day] || (day !== "Saturday" && day !== "Sunday" ? emp.schedule : "Off");
+                                  
+                                  // Find matched standard values or treat as custom
+                                  let selectValue = "Off";
+                                  if (currentShift.toLowerCase().includes("off")) selectValue = "Off";
+                                  else if (currentShift.toLowerCase().includes("morning")) selectValue = "Morning";
+                                  else if (currentShift.toLowerCase().includes("evening")) selectValue = "Evening";
+                                  else if (currentShift.toLowerCase().includes("night")) selectValue = "Night";
+                                  else if (currentShift.toLowerCase().includes("day") || currentShift === "09:00 - 18:00") selectValue = "Day";
+                                  else selectValue = "Custom";
+
+                                  return (
+                                    <td key={day} className="border border-swiss-dark p-2 text-center">
+                                      <select
+                                        value={selectValue}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          let finalShiftStr = "Off";
+                                          if (val === "Morning") finalShiftStr = "Morning (07:00 - 15:00)";
+                                          else if (val === "Day") finalShiftStr = "Day (09:00 - 18:00)";
+                                          else if (val === "Evening") finalShiftStr = "Evening (15:00 - 23:00)";
+                                          else if (val === "Night") finalShiftStr = "Night (23:00 - 07:00)";
+                                          else if (val === "Off") finalShiftStr = "Off";
+                                          else finalShiftStr = "Day (09:00 - 18:00)"; // Fallback
+
+                                          handleUpdateEmployeeShift(emp.id, day, finalShiftStr);
+                                        }}
+                                        className={`w-full text-[10px] font-bold p-1 cursor-pointer focus:outline-none border ${
+                                          selectValue === "Off" 
+                                            ? "bg-neutral-50 text-neutral-400 border-neutral-300" 
+                                            : "bg-emerald-50 text-emerald-800 border-emerald-300"
+                                        }`}
+                                      >
+                                        <option value="Off">💤 Off</option>
+                                        <option value="Morning">🌅 Morning (8h)</option>
+                                        <option value="Day">☀️ Day (9h)</option>
+                                        <option value="Evening">🌇 Evening (8h)</option>
+                                        <option value="Night">🌌 Night (8h)</option>
+                                        {selectValue === "Custom" && <option value="Custom">⚙️ {currentShift.split(' ')[0]}</option>}
+                                      </select>
+                                      <div className="text-[8px] text-neutral-400 mt-1 uppercase font-bold">
+                                        {selectValue !== "Off" && selectValue !== "Custom" ? `${getShiftHours(currentShift)} hrs` : selectValue === "Custom" ? `${getShiftHours(currentShift)} hrs` : "Rest"}
+                                      </div>
+                                    </td>
+                                  );
+                                })}
+                                <td className="border border-swiss-dark p-2 text-center font-bold text-swiss-dark">
+                                  {totalEmpHours} hrs
+                                </td>
+                                <td className="border border-swiss-dark p-2 text-right font-black text-emerald-700">
+                                  {activeHotel?.currency || "NPR"} {totalEmpCost.toLocaleString()}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        {employees.filter(e => e.hotelId === currentHotelId && e.branchId === currentBranchId).length === 0 && (
+                          <tr>
+                            <td colSpan={10} className="p-8 text-center text-swiss-dark/50 italic bg-swiss-light">
+                              No employees assigned to the active branch ({activeBranch?.name || "None"}). Assign staff to this branch to start planning weekly schedules.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* 📊 Cost Analyzer and Charts Panel */}
+                  {(() => {
+                    // Generate branch metrics data for Recharts
+                    const branchMetricsData = (activeHotel?.branches || []).map(br => {
+                      // Sum branch employee costs
+                      const branchEmps = employees.filter(e => e.hotelId === currentHotelId && e.branchId === br.id);
+                      let branchWeeklyCost = 0;
+                      branchEmps.forEach(emp => {
+                        let totalEmpHours = 0;
+                        const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+                        days.forEach(day => {
+                          const shift = emp.weeklyShifts?.[day] || (day !== "Saturday" && day !== "Sunday" ? emp.schedule : "Off");
+                          totalEmpHours += getShiftHours(shift);
+                        });
+                        branchWeeklyCost += totalEmpHours * (emp.hourlyRate || 200);
+                      });
+
+                      // Sum completed/paid revenue for this branch
+                      const branchRevenue = hotelOrders
+                        .filter(o => o.branchId === br.id && o.paymentStatus === "Paid")
+                        .reduce((sum, o) => sum + o.totalAmount, 0);
+
+                      return {
+                        name: br.name.replace("Branch", "").trim(),
+                        revenue: branchRevenue,
+                        laborCost: branchWeeklyCost,
+                        ratio: branchRevenue > 0 ? Math.round((branchWeeklyCost / branchRevenue) * 100) : 0,
+                        rawBranch: br
+                      };
+                    });
+
+                    return (
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pt-4 border-t border-swiss-dark">
+                        {/* CHART COLUMN */}
+                        <div className="lg:col-span-2 bg-swiss-light border border-swiss-dark p-4 space-y-3 font-mono text-xs">
+                          <div className="flex justify-between items-center pb-2 border-b border-swiss-gray">
+                            <span className="font-bold uppercase text-[10px] tracking-wider text-swiss-dark">
+                              📊 Projected Labor Expenditures vs. Branch Revenue
+                            </span>
+                            <span className="text-[9px] bg-white border border-swiss-dark px-2 py-0.5 text-neutral-500 font-bold">
+                              WEEKLY COMPARATIVE METRICS ({activeHotel?.currency || "NPR"})
+                            </span>
+                          </div>
+
+                          <div className="h-[240px] w-full pt-2">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={branchMetricsData}
+                                margin={{ top: 10, right: 10, left: -10, bottom: 5 }}
+                              >
+                                <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+                                <XAxis 
+                                  dataKey="name" 
+                                  tick={{ fill: "#333", fontSize: 10, fontFamily: "monospace" }} 
+                                  stroke="#333" 
+                                />
+                                <YAxis 
+                                  tick={{ fill: "#333", fontSize: 9, fontFamily: "monospace" }} 
+                                  stroke="#333" 
+                                />
+                                <Tooltip 
+                                  contentStyle={{ backgroundColor: "#fff", border: "2px solid #333", fontFamily: "monospace", fontSize: "11px" }}
+                                />
+                                <Legend 
+                                  wrapperStyle={{ fontFamily: "monospace", fontSize: "10px" }}
+                                />
+                                <Bar 
+                                  name="Branch Revenue (Paid)" 
+                                  dataKey="revenue" 
+                                  fill="#10b981" 
+                                  stroke="#064e3b"
+                                  strokeWidth={1.5}
+                                />
+                                <Bar 
+                                  name="Projected Labor Cost" 
+                                  dataKey="laborCost" 
+                                  fill="#f97316" 
+                                  stroke="#7c2d12"
+                                  strokeWidth={1.5}
+                                />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        {/* STATS & METRIC EXPLANATION PANEL */}
+                        <div className="bg-white border border-swiss-dark p-4 font-mono text-xs space-y-4">
+                          <h4 className="font-bold uppercase tracking-tight text-[10px] pb-2 border-b border-swiss-dark text-swiss-dark">
+                            Labor Force Efficiency Audit
+                          </h4>
+
+                          <div className="space-y-3.5 divide-y divide-neutral-100">
+                            {branchMetricsData.map((data, idx) => {
+                              const ratio = data.ratio;
+                              
+                              let statusText = "";
+                              let statusClass = "";
+                              let icon = "✅";
+
+                              if (data.revenue === 0) {
+                                statusText = "No Revenue Logged: Awaiting completed bookings or checkouts to calculate precise ratios.";
+                                statusClass = "text-neutral-500 bg-neutral-50 border-neutral-200";
+                                icon = "ℹ️";
+                              } else if (ratio > 40) {
+                                statusText = `Excessive Labor Ratio (${ratio}%): Expenses exceed recommended 40% threshold. Streamline schedule densities or cross-train waiters.`;
+                                statusClass = "text-amber-800 bg-amber-50 border-amber-200";
+                                icon = "⚠️";
+                              } else if (ratio < 15) {
+                                statusText = `Lean Labor Ratio (${ratio}%): Labor is highly optimized but may trigger service latency. Audit guest satisfaction rates.`;
+                                statusClass = "text-cyan-800 bg-cyan-50 border-cyan-200";
+                                icon = "📈";
+                              } else {
+                                statusText = `Optimal Swiss Ratio (${ratio}%): Personnel budget matches financial benchmarks. Excellent personnel resource density alignment.`;
+                                statusClass = "text-emerald-800 bg-emerald-50 border-emerald-200";
+                                icon = "✅";
+                              }
+
+                              return (
+                                <div key={idx} className={`pt-3 first:pt-0`}>
+                                  <div className="flex justify-between items-start mb-1">
+                                    <span className="font-bold text-swiss-dark text-[11px] uppercase">
+                                      🏢 {data.rawBranch.name}
+                                    </span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-1 text-[10px] text-swiss-dark/70 my-1.5">
+                                    <div>Weekly Rev: <strong className="text-emerald-600">{activeHotel?.currency || "NPR"} {data.revenue.toLocaleString()}</strong></div>
+                                    <div>Labor Cost: <strong className="text-orange-600">{activeHotel?.currency || "NPR"} {data.laborCost.toLocaleString()}</strong></div>
+                                  </div>
+                                  <div className={`p-2 border text-[10px] leading-relaxed ${statusClass}`}>
+                                    <span className="mr-1">{icon}</span> {statusText}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {(activeHotel?.branches || []).length === 0 && (
+                              <div className="text-center italic text-neutral-400 py-6">
+                                No branches configured for this hotel.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
                 {/* DYNAMIC ORDER LOAD BALANCING CENTER */}
                 <div className="bg-white border-2 border-swiss-dark p-6 space-y-6">
                   <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-swiss-dark">
@@ -3052,6 +4934,448 @@ export default function App() {
 
               </div>
             )}
+
+            {/* 🏢 PORTAL TAB: BRANCHES & VENUES MANAGEMENT */}
+            {adminActiveTab === "branches" && (
+              <div className="space-y-6 animate-fadeIn">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  
+                  {/* LEFT COLUMN: BRANCH PROVISIONING OR EDITING FORM */}
+                  <div className="bg-white border-2 border-swiss-dark p-6 font-mono text-xs">
+                    {editingBranchId ? (
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center pb-2 border-b border-swiss-dark mb-4">
+                          <h3 className="text-base font-bold uppercase tracking-tight text-terracotta">
+                            Edit Branch Details
+                          </h3>
+                          <button
+                            onClick={() => {
+                              setEditingBranchId(null);
+                              setEditBranchForm({ name: "", location: "", contactPhone: "", operatingHours: "09:00 - 22:00" });
+                            }}
+                            className="text-[10px] uppercase font-bold text-swiss-dark/60 hover:text-swiss-dark cursor-pointer underline"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                        <form onSubmit={handleUpdateBranch} className="space-y-4">
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px]">Branch Name</label>
+                            <input 
+                              type="text" 
+                              required
+                              value={editBranchForm.name}
+                              onChange={(e) => setEditBranchForm({ ...editBranchForm, name: e.target.value })}
+                              placeholder="e.g. Lalitpur Hub"
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px]">Location Address</label>
+                            <input 
+                              type="text" 
+                              value={editBranchForm.location}
+                              onChange={(e) => setEditBranchForm({ ...editBranchForm, location: e.target.value })}
+                              placeholder="e.g. Jhamsikhel, Lalitpur"
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px]">Contact Phone</label>
+                            <input 
+                              type="text" 
+                              value={editBranchForm.contactPhone}
+                              onChange={(e) => setEditBranchForm({ ...editBranchForm, contactPhone: e.target.value })}
+                              placeholder="e.g. +977-1-4220000"
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px]">Operating Hours</label>
+                            <input 
+                              type="text" 
+                              value={editBranchForm.operatingHours}
+                              onChange={(e) => setEditBranchForm({ ...editBranchForm, operatingHours: e.target.value })}
+                              placeholder="e.g. 08:00 - 22:00"
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none"
+                            />
+                          </div>
+                          <button 
+                            type="submit"
+                            className="w-full bg-swiss-dark hover:bg-terracotta text-white p-2.5 font-bold uppercase transition-all tracking-wider cursor-pointer border-none text-[10px]"
+                          >
+                            Save Branch Changes
+                          </button>
+                        </form>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <h3 className="text-base font-bold uppercase tracking-tight text-swiss-dark mb-4 pb-2 border-b border-swiss-dark">
+                          Provision New Branch
+                        </h3>
+                        <form onSubmit={handleAddBranch} className="space-y-4">
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px]">Branch Name</label>
+                            <input 
+                              type="text" 
+                              required
+                              value={newBranchForm.name}
+                              onChange={(e) => setNewBranchForm({ ...newBranchForm, name: e.target.value })}
+                              placeholder="e.g. Pokhara Lakeside"
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px]">Location Address</label>
+                            <input 
+                              type="text" 
+                              value={newBranchForm.location}
+                              onChange={(e) => setNewBranchForm({ ...newBranchForm, location: e.target.value })}
+                              placeholder="e.g. Lakeside Rd, Pokhara"
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px]">Contact Phone</label>
+                            <input 
+                              type="text" 
+                              value={newBranchForm.contactPhone}
+                              onChange={(e) => setNewBranchForm({ ...newBranchForm, contactPhone: e.target.value })}
+                              placeholder="e.g. +977-61-530000"
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px]">Operating Hours</label>
+                            <input 
+                              type="text" 
+                              value={newBranchForm.operatingHours}
+                              onChange={(e) => setNewBranchForm({ ...newBranchForm, operatingHours: e.target.value })}
+                              placeholder="e.g. 09:00 - 23:00"
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1 uppercase text-[10px] text-terracotta">⚡ QR Table Template Quick-Start</label>
+                            <select
+                              value={newBranchForm.autoCreateTables}
+                              onChange={(e) => setNewBranchForm({ ...newBranchForm, autoCreateTables: Number(e.target.value) })}
+                              className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none cursor-pointer font-bold"
+                            >
+                              <option value={0}>❌ No initial tables (Create manually)</option>
+                              <option value={4}>🆕 Auto-generate 4 Standard Tables</option>
+                              <option value={8}>🆕 Auto-generate 8 Standard Tables</option>
+                              <option value={12}>🆕 Auto-generate 12 Standard Tables</option>
+                              <option value={16}>🆕 Auto-generate 16 Standard Tables</option>
+                            </select>
+                            <p className="text-[9px] text-swiss-dark/60 mt-1 leading-tight">
+                              Choosing a template auto-provisions table records with ready-to-use digital QR codes immediately.
+                            </p>
+                          </div>
+                          <button 
+                            type="submit"
+                            className="w-full bg-terracotta hover:bg-swiss-dark text-white p-2.5 font-bold uppercase transition-all tracking-wider cursor-pointer border-none text-[10px]"
+                          >
+                            Add Branch Node
+                          </button>
+                        </form>
+                      </div>
+                    )}
+
+                    <div className="mt-6 pt-4 border-t border-dashed border-swiss-dark/20 text-[10px] text-swiss-dark/70 space-y-2 leading-relaxed">
+                      <p className="font-bold uppercase text-swiss-dark text-[10px]">Operational Guidelines:</p>
+                      <p>
+                        Adding branches expands your SaaS infrastructure footprint dynamically. Each branch holds its own specific menu mappings, QR tables, and shift rosters.
+                      </p>
+                      <p>
+                        To decommission a branch, ensure there is at least one active branch remaining. Decommissioning removes its venue listing instantly.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* RIGHT COLUMN: BRANCHES DIRECTORY MAP */}
+                  <div className="lg:col-span-2 space-y-4 font-mono text-xs">
+                    <div className="bg-white border-2 border-swiss-dark p-6">
+                      <div className="flex justify-between items-center pb-2 border-b border-swiss-dark mb-4">
+                        <h3 className="text-base font-bold uppercase tracking-tight">
+                          Active Venues Directory
+                        </h3>
+                        <span className="text-[10px] font-bold bg-swiss-light border border-swiss-dark px-2 py-0.5">
+                          {activeHotel?.branches?.length || 0} VENUES ACTIVE
+                        </span>
+                      </div>
+
+                      <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                        {(activeHotel?.branches || []).map((branch) => {
+                          const branchTablesCount = tables.filter(t => t.hotelId === currentHotelId && t.branchId === branch.id).length;
+                          const branchEmployeesCount = employees.filter(e => e.hotelId === currentHotelId && e.branchId === branch.id).length;
+
+                          return (
+                            <div 
+                              key={branch.id} 
+                              className={`p-4 border-2 transition-all flex flex-col md:flex-row justify-between items-start md:items-center gap-4 ${
+                                currentBranchId === branch.id 
+                                  ? "border-swiss-dark bg-sand-light" 
+                                  : branch.status === "PendingApproval"
+                                    ? "border-amber-300 bg-amber-50/20 hover:border-amber-500"
+                                    : "border-swiss-gray bg-white hover:border-swiss-dark/50"
+                              }`}
+                            >
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-bold text-sm text-swiss-dark uppercase">
+                                    🏢 {branch.name}
+                                  </span>
+                                  {currentBranchId === branch.id && (
+                                    <span className="bg-emerald-100 text-emerald-800 text-[8px] font-black uppercase px-1.5 py-0.25 tracking-wider border border-emerald-300">
+                                      Active Selection
+                                    </span>
+                                  )}
+                                  {branch.status === "PendingApproval" && (
+                                    <span className="bg-amber-100 text-amber-800 text-[8px] font-black uppercase px-1.5 py-0.25 tracking-wider border border-amber-300 animate-pulse">
+                                      ⏳ Pending Approval
+                                    </span>
+                                  )}
+                                  <span className="text-[9px] bg-swiss-gray text-swiss-dark/60 px-1 font-mono">
+                                    ID: {branch.id}
+                                  </span>
+                                </div>
+                                <div className="text-[10px] text-swiss-dark/70 flex flex-col gap-1">
+                                  <span className="flex items-center gap-1">📍 {branch.location || "No Address Saved"}</span>
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-0.5">
+                                    <span className="flex items-center gap-1 text-[9px] text-swiss-dark/60">📞 Contact: {branch.contactPhone || "Not Configured"}</span>
+                                    <span className="flex items-center gap-1 text-[9px] text-swiss-dark/60">⏰ Hours: {branch.operatingHours || "09:00 - 22:00"}</span>
+                                  </div>
+                                </div>
+                                <div className="flex gap-4 mt-2 pt-1">
+                                  <div className="text-[10px]">
+                                    Tables: <strong className="text-swiss-dark">{branchTablesCount} QR Maps</strong>
+                                  </div>
+                                  <div className="text-[10px]">
+                                    Staff Assigned: <strong className="text-swiss-dark">{branchEmployeesCount} Profiles</strong>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+                                {currentBranchId !== branch.id && (
+                                  <button
+                                    onClick={() => setCurrentBranchId(branch.id)}
+                                    className="px-2 py-1 bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark font-bold text-[9px] uppercase cursor-pointer"
+                                  >
+                                    Switch To
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => {
+                                    setEditingBranchId(branch.id);
+                                    setEditBranchForm({
+                                      name: branch.name,
+                                      location: branch.location || "",
+                                      contactPhone: branch.contactPhone || "",
+                                      operatingHours: branch.operatingHours || "09:00 - 22:00"
+                                    });
+                                  }}
+                                  className="px-2 py-1 bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark font-bold text-[9px] uppercase cursor-pointer"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteBranch(branch.id)}
+                                  disabled={(activeHotel?.branches || []).length <= 1}
+                                  className={`px-2 py-1 font-bold text-[9px] uppercase cursor-pointer transition-colors ${
+                                    (activeHotel?.branches || []).length <= 1 
+                                      ? "opacity-40 cursor-not-allowed bg-neutral-100 text-neutral-400 border border-neutral-300"
+                                      : "bg-rose-50 hover:bg-rose-800 hover:text-white text-rose-800 border border-rose-800"
+                                  }`}
+                                >
+                                  Decommission
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {(activeHotel?.branches || []).length === 0 && (
+                          <div className="border border-dashed border-swiss-dark p-8 text-center text-swiss-dark/50 italic">
+                            No branches configured for this SaaS profile.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* VENUES COMPARISON & PERFORMANCE ANALYTICS GRID */}
+                <div className="bg-white border-2 border-swiss-dark p-6 font-mono text-xs">
+                  <div className="pb-2 border-b border-swiss-dark mb-4">
+                    <h3 className="text-base font-bold uppercase tracking-tight flex items-center gap-1.5 text-swiss-dark">
+                      📊 Master Venue Comparison Matrix & Performance Hub
+                    </h3>
+                    <p className="text-[10px] text-swiss-dark/60 mt-0.5">
+                      Real-time cross-branch performance metric comparison. Analyze revenue generation, table utilisation, active order volume, and staff coverage.
+                    </p>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-swiss-dark text-white uppercase text-[9px] tracking-wider">
+                          <th className="p-2.5 border border-swiss-dark">🏢 Venue / Branch</th>
+                          <th className="p-2.5 border border-swiss-dark">📞 Contact Info</th>
+                          <th className="p-2.5 border border-swiss-dark">⏰ Hours</th>
+                          <th className="p-2.5 border border-swiss-dark text-center">🏃 Staff Count</th>
+                          <th className="p-2.5 border border-swiss-dark text-center">🍽️ Menu Count</th>
+                          <th className="p-2.5 border border-swiss-dark text-center">🪑 Occupancy Rate</th>
+                          <th className="p-2.5 border border-swiss-dark text-center">🔥 Active Orders</th>
+                          <th className="p-2.5 border border-swiss-dark text-right">💵 Completed Sales</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(activeHotel?.branches || []).map((branch) => {
+                          const branchStaff = employees.filter(e => e.hotelId === currentHotelId && e.branchId === branch.id);
+                          const branchTables = tables.filter(t => t.hotelId === currentHotelId && t.branchId === branch.id);
+                          const activeBranchTables = branchTables.filter(t => t.status !== "Vacant").length;
+                          const occupancyPct = branchTables.length > 0 ? Math.round((activeBranchTables / branchTables.length) * 100) : 0;
+                          
+                          const branchMenuCount = hotelMenu.filter(item => 
+                            !item.branchAvailability || 
+                            item.branchAvailability.length === 0 || 
+                            item.branchAvailability.includes(branch.id)
+                          ).length;
+
+                          const branchActiveOrders = orders.filter(o => 
+                            o.hotelId === currentHotelId && 
+                            o.branchId === branch.id && 
+                            o.status !== "Completed" && 
+                            o.status !== "Cancelled"
+                          ).length;
+
+                          const branchCompletedRevenue = orders.filter(o => 
+                            o.hotelId === currentHotelId && 
+                            o.branchId === branch.id && 
+                            o.status === "Completed"
+                          ).reduce((acc, curr) => acc + curr.totalAmount, 0);
+
+                          return (
+                            <tr key={branch.id} className="hover:bg-swiss-light transition-colors text-[10px]">
+                              <td className="p-2.5 border border-swiss-dark/20 font-bold text-swiss-dark">
+                                {branch.name} {currentBranchId === branch.id && <span className="text-[8px] bg-terracotta text-white font-black uppercase px-1 ml-1">Current</span>}
+                              </td>
+                              <td className="p-2.5 border border-swiss-dark/20 text-swiss-dark/70">{branch.contactPhone || "Not configured"}</td>
+                              <td className="p-2.5 border border-swiss-dark/20 text-swiss-dark/70">{branch.operatingHours || "09:00 - 22:00"}</td>
+                              <td className="p-2.5 border border-swiss-dark/20 text-center font-bold">{branchStaff.length} Employees</td>
+                              <td className="p-2.5 border border-swiss-dark/20 text-center font-bold text-emerald-700">{branchMenuCount} dishes active</td>
+                              <td className="p-2.5 border border-swiss-dark/20 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <div className="w-12 bg-neutral-200 h-2 border border-swiss-dark">
+                                    <div className="bg-terracotta h-full" style={{ width: `${occupancyPct}%` }}></div>
+                                  </div>
+                                  <span className="font-bold">{occupancyPct}%</span>
+                                </div>
+                              </td>
+                              <td className="p-2.5 border border-swiss-dark/20 text-center">
+                                <span className={`px-1.5 py-0.5 font-bold ${branchActiveOrders > 0 ? "bg-amber-100 text-amber-800 border border-amber-300" : "bg-neutral-100 text-neutral-500"}`}>
+                                  {branchActiveOrders} active
+                                </span>
+                              </td>
+                              <td className="p-2.5 border border-swiss-dark/20 text-right font-black text-swiss-dark">
+                                {activeHotel?.currency} {branchCompletedRevenue.toLocaleString()}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* BRANCH MENU SELECTION CUSTOMIZER */}
+                <div className="bg-white border-2 border-swiss-dark p-6 font-mono text-xs">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-2 border-b border-swiss-dark mb-4 gap-2">
+                    <div>
+                      <h3 className="text-base font-bold uppercase tracking-tight text-swiss-dark flex items-center gap-1.5">
+                        🍽️ Branch-Specific Menu Customizer & Availability Matrix
+                      </h3>
+                      <p className="text-[10px] text-swiss-dark/60">
+                        Map and toggle dish availability specifically for a branch. Toggle an item off to instantly disable it from that branch's digital QR ordering page.
+                      </p>
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-[10px] uppercase text-swiss-dark">Configure Menu For:</span>
+                      <select
+                        value={currentBranchId || ""}
+                        onChange={(e) => setCurrentBranchId(e.target.value)}
+                        className="bg-swiss-light border-2 border-swiss-dark p-1.5 text-[10px] font-bold text-swiss-dark focus:outline-none cursor-pointer"
+                      >
+                        {(activeHotel?.branches || []).map(b => (
+                          <option key={b.id} value={b.id}>🏢 {b.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {activeBranch ? (
+                    <div className="space-y-4">
+                      <div className="bg-sand-light border border-swiss-dark/30 p-3 flex justify-between items-center text-[10px]">
+                        <div>
+                          Showing menu settings for <strong className="uppercase text-terracotta">{activeBranch.name}</strong>. Items with <span className="text-emerald-700 font-bold">Enabled</span> are visible on the customer's QR ordering menu for this branch.
+                        </div>
+                        <div className="font-bold">
+                          {hotelMenu.filter(item => 
+                            !item.branchAvailability || 
+                            item.branchAvailability.length === 0 || 
+                            item.branchAvailability.includes(activeBranch.id)
+                          ).length} / {hotelMenu.length} ACTIVE ITEMS
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[400px] overflow-y-auto pr-1">
+                        {hotelMenu.map((item) => {
+                          const isCurrentlyServed = !item.branchAvailability || 
+                                                     item.branchAvailability.length === 0 || 
+                                                     item.branchAvailability.includes(activeBranch.id);
+                          return (
+                            <div 
+                              key={item.id} 
+                              className={`p-3 border-2 transition-all flex justify-between items-center ${
+                                isCurrentlyServed 
+                                  ? "border-swiss-dark bg-white" 
+                                  : "border-swiss-gray bg-neutral-50 opacity-75"
+                              }`}
+                            >
+                              <div className="space-y-0.5">
+                                <div className="font-bold text-xs text-swiss-dark">{item.name}</div>
+                                <div className="text-[9px] text-swiss-dark/60 uppercase font-black">{item.category} • {activeHotel?.currency}{item.price}</div>
+                                <p className="text-[9px] text-swiss-dark/50 line-clamp-1">{item.description}</p>
+                              </div>
+
+                              <button
+                                onClick={() => handleToggleBranchMenuAvailability(item.id, activeBranch.id)}
+                                className={`px-3 py-1 font-bold text-[9px] uppercase cursor-pointer transition-all border ${
+                                  isCurrentlyServed
+                                    ? "bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border-emerald-400"
+                                    : "bg-neutral-100 hover:bg-neutral-200 text-neutral-500 border-neutral-300"
+                                }`}
+                              >
+                                {isCurrentlyServed ? "🟢 Served" : "🔴 Disabled"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="border border-dashed border-swiss-dark p-6 text-center text-swiss-dark/50 italic">
+                      Please select or provision a branch first.
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            )}
           </div>
         )}
 
@@ -3066,6 +5390,262 @@ export default function App() {
                   <div className="text-xs font-mono bg-swiss-gray px-3 py-1 border border-swiss-dark">
                     Active Orders: <span className="font-bold text-swiss-dark">{hotelOrders.filter(o => o.status !== "Completed" && o.status !== "Cancelled").length}</span>
                   </div>
+                </div>
+
+                {/* STAFF WORKSPACE SELECTION & NOTIFICATION HUD */}
+                <div className="bg-white border-2 border-swiss-dark p-6 space-y-4 font-mono text-xs">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div>
+                      <h3 className="text-sm font-black uppercase tracking-tight text-swiss-dark flex items-center gap-1.5">
+                        <User className="w-4 h-4 text-terracotta" />
+                        Staff Duty & Alert Terminal
+                      </h3>
+                      <p className="text-[10px] text-swiss-dark/70">
+                        Select your profile to check shift schedules, toggle attendance status, and receive direct dining room assignments.
+                      </p>
+                    </div>
+                    
+                    <div className="flex items-center gap-3 w-full md:w-auto">
+                      <select
+                        value={selectedStaffId || ""}
+                        onChange={(e) => setSelectedStaffId(e.target.value || null)}
+                        className="w-full md:w-64 bg-swiss-light border-2 border-swiss-dark p-2 text-xs font-bold text-swiss-dark focus:outline-none cursor-pointer"
+                      >
+                        <option value="">👤 Select Your Staff Profile...</option>
+                        {employees
+                          .filter(emp => emp.hotelId === currentHotelId)
+                          .map(emp => (
+                            <option key={emp.id} value={emp.id}>
+                              {emp.role === "Waiter" ? "🏃" : emp.role === "Kitchen Staff" ? "🧑‍🍳" : emp.role === "Cashier" ? "💵" : "👔"} {emp.name} ({emp.role})
+                            </option>
+                          ))
+                        }
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* IF STAFF IS SELECTED */}
+                  {selectedStaffId && (() => {
+                    const activeStaff = employees.find(emp => emp.id === selectedStaffId);
+                    if (!activeStaff) return null;
+                    
+                    const unreadCount = staffNotifications.filter(n => !n.read).length;
+                    
+                    // Find assigned tables (for Waiter role)
+                    const assignedTables = tables.filter(t => t.hotelId === currentHotelId && t.assignedWaiterId === selectedStaffId);
+                    // Find assigned orders (for active waiter / kitchen staff)
+                    const assignedOrders = orders.filter(o => o.hotelId === currentHotelId && o.assignedStaffId === selectedStaffId && o.status !== "Completed" && o.status !== "Cancelled");
+                    
+                    return (
+                      <div className="mt-4 pt-4 border-t-2 border-swiss-dark space-y-4 animate-fadeIn">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+                          
+                          {/* PROFILE INFO & SCHEDULE */}
+                          <div className="md:col-span-2 flex flex-col sm:flex-row gap-4 items-start sm:items-center bg-swiss-light p-3 border border-swiss-dark">
+                            <div className="p-2 bg-swiss-dark text-white font-bold rounded-sm text-center min-w-[50px]">
+                              {activeStaff.role === "Waiter" ? "🏃" : activeStaff.role === "Kitchen Staff" ? "🧑‍🍳" : "👔"}
+                            </div>
+                            <div>
+                              <div className="font-bold text-sm text-swiss-dark">{activeStaff.name}</div>
+                              <div className="text-[10px] text-swiss-dark/70 uppercase font-black">{activeStaff.role} • {activeHotel?.branches.find(b => b.id === activeStaff.branchId)?.name || activeStaff.branchId}</div>
+                              <div className="text-[10px] text-terracotta mt-0.5 font-bold">⏰ Shift: {activeStaff.schedule || "09:00 - 18:00"}</div>
+                            </div>
+                          </div>
+
+                          {/* ATTENDANCE TOGGLE (CLOCK IN/OUT) */}
+                          <div className="flex flex-col justify-center bg-swiss-light p-3 border border-swiss-dark">
+                            <span className="text-[9px] font-bold text-swiss-dark/60 uppercase block mb-1">Attendance Status</span>
+                            <div className="flex items-center gap-2">
+                              <span className={`px-2 py-1 text-[10px] font-black border uppercase ${
+                                activeStaff.attendance === "Present" 
+                                  ? "bg-emerald-100 text-emerald-800 border-emerald-500 animate-pulse" 
+                                  : "bg-rose-100 text-rose-800 border-rose-400"
+                              }`}>
+                                {activeStaff.attendance === "Present" ? "🟢 Present (On Duty)" : "🔴 Absent (Off Duty)"}
+                              </span>
+                              <button
+                                onClick={async () => {
+                                  const targetAttendance = activeStaff.attendance === "Present" ? "Absent" : "Present";
+                                  await handleUpdateEmployeeAttendance(activeStaff.id, targetAttendance);
+                                  // Refresh specific staff notifications after status change
+                                  setTimeout(() => fetchStaffNotifications(activeStaff.id), 300);
+                                }}
+                                className={`px-3 py-1 text-[10px] uppercase font-bold border-2 border-swiss-dark cursor-pointer transition-all ${
+                                  activeStaff.attendance === "Present" 
+                                    ? "bg-neutral-200 hover:bg-neutral-300 text-swiss-dark" 
+                                    : "bg-terracotta hover:bg-swiss-dark text-white"
+                                }`}
+                              >
+                                {activeStaff.attendance === "Present" ? "Clock Out" : "Clock In"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* NOTIFICATION CENTER BADGE */}
+                          <div className="relative bg-swiss-light p-3 border border-swiss-dark flex justify-between items-center">
+                            <div>
+                              <span className="text-[9px] font-bold text-swiss-dark/60 uppercase block mb-0.5">Staff Alerts</span>
+                              <button
+                                onClick={() => setIsStaffNotificationOpen(!isStaffNotificationOpen)}
+                                className="flex items-center gap-2 px-3 py-1 bg-white border-2 border-swiss-dark hover:bg-neutral-50 font-bold uppercase tracking-wider text-[10px] cursor-pointer"
+                              >
+                                <Bell className={`w-4 h-4 text-terracotta ${unreadCount > 0 ? "animate-bounce" : ""}`} />
+                                {unreadCount > 0 ? `${unreadCount} Alerts` : "No Alerts"}
+                              </button>
+                            </div>
+                            {unreadCount > 0 && (
+                              <span className="absolute -top-2.5 -right-2.5 bg-rose-600 text-white border-2 border-swiss-dark w-6 h-6 rounded-full flex items-center justify-center font-black text-[11px] animate-pulse">
+                                {unreadCount}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* NOTIFICATIONS EXPANDED DROPDOWN LIST */}
+                        {isStaffNotificationOpen && (
+                          <div className="bg-white border-2 border-swiss-dark p-4 space-y-3 animate-fadeIn">
+                            <div className="flex justify-between items-center pb-2 border-b border-swiss-dark">
+                              <span className="font-bold text-swiss-dark text-[11px] uppercase tracking-wider">Duty Alerts Ledger</span>
+                              <div className="flex gap-2">
+                                {unreadCount > 0 && (
+                                  <button
+                                    onClick={handleMarkAllNotificationsRead}
+                                    className="text-[9px] font-bold uppercase text-terracotta border border-terracotta px-2 py-0.5 hover:bg-terracotta hover:text-white cursor-pointer"
+                                  >
+                                    Acknowledge All
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => setIsStaffNotificationOpen(false)}
+                                  className="text-[9px] font-bold uppercase text-swiss-dark/60 border border-swiss-dark/30 px-2 py-0.5 hover:bg-swiss-light cursor-pointer"
+                                >
+                                  Close [X]
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                              {staffNotifications.length === 0 ? (
+                                <div className="p-4 text-center text-swiss-dark/40 italic font-mono text-[10px]">
+                                  No notifications recorded. Start shift or receive assigned tables to trigger alerts.
+                                </div>
+                              ) : (
+                                [...staffNotifications].reverse().map((n) => (
+                                  <div 
+                                    key={n.id} 
+                                    className={`border p-3 transition-all ${
+                                      n.read 
+                                        ? "bg-swiss-light/40 border-swiss-dark/10 opacity-60" 
+                                        : "bg-amber-50 border-amber-300 shadow-sm"
+                                    }`}
+                                  >
+                                    <div className="flex justify-between items-start gap-4">
+                                      <div className="flex gap-2 items-start">
+                                        <span className="text-base mt-0.5">
+                                          {n.type === "shift_start" ? "⏱️" : n.type === "table_assignment" ? "📌" : "🛎️"}
+                                        </span>
+                                        <div>
+                                          <p className={`text-[11px] font-semibold text-swiss-dark ${n.read ? "line-through text-swiss-dark/55" : ""}`}>
+                                            {n.message}
+                                          </p>
+                                          <span className="text-[9px] text-swiss-dark/50 block mt-1">
+                                            {new Date(n.timestamp).toLocaleTimeString()} • {new Date(n.timestamp).toLocaleDateString()}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      {!n.read && (
+                                        <button
+                                          onClick={() => handleMarkNotificationRead(n.id)}
+                                          className="bg-swiss-dark hover:bg-terracotta text-white px-2 py-0.5 text-[9px] font-bold uppercase cursor-pointer"
+                                        >
+                                          Acknowledge
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ASSIGNED TABLES AND ACTIVE ORDERS CARDS */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          
+                          {/* MY ASSIGNED TABLES */}
+                          <div className="border border-swiss-dark bg-swiss-light/30 p-4">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-swiss-dark/60 block mb-3 border-b border-swiss-dark/20 pb-1">
+                              📌 My Assigned Dining Tables ({assignedTables.length})
+                            </span>
+                            {assignedTables.length === 0 ? (
+                              <div className="p-4 text-center text-swiss-dark/50 italic text-[10px]">
+                                No specific tables assigned to you. Instruct corporate manager to set assignments in the Tables layout.
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-2 gap-2">
+                                {assignedTables.map(t => (
+                                  <div key={t.id} className="bg-white border border-swiss-dark p-2.5 font-mono text-[10px] space-y-1">
+                                    <div className="flex justify-between items-center">
+                                      <span className="font-black text-xs bg-swiss-dark text-white px-1.5 py-0.5">Table {t.number}</span>
+                                      <span className={`px-1.5 py-0.5 font-bold uppercase border text-[8px] ${
+                                        t.status === "Occupied" 
+                                          ? "bg-rose-50 text-rose-800 border-rose-300" 
+                                          : t.status === "Reserved"
+                                          ? "bg-amber-50 text-amber-800 border-amber-300"
+                                          : "bg-emerald-50 text-emerald-800 border-emerald-300"
+                                      }`}>
+                                        {t.status}
+                                      </span>
+                                    </div>
+                                    <p className="text-swiss-dark/70">Seats: <span className="font-bold">{t.seatingCapacity}</span></p>
+                                    {t.reservedName && <p className="text-swiss-dark/80 font-semibold truncate">Guest: {t.reservedName}</p>}
+                                    {t.reservedTime && <p className="text-swiss-dark/80 font-semibold text-[9px]">Time: {t.reservedTime}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* MY ACTIVE ORDERS */}
+                          <div className="border border-swiss-dark bg-swiss-light/30 p-4">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-swiss-dark/60 block mb-3 border-b border-swiss-dark/20 pb-1">
+                              🛎️ My Active Orders Queue ({assignedOrders.length})
+                            </span>
+                            {assignedOrders.length === 0 ? (
+                              <div className="p-4 text-center text-swiss-dark/50 italic text-[10px]">
+                                You have no active orders queued. Orders auto-assigned by the dynamic rebalancer will appear here.
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                {assignedOrders.map(o => (
+                                  <div key={o.id} className="bg-white border border-swiss-dark p-3.5 font-mono text-[10px] space-y-1.5">
+                                    <div className="flex justify-between items-center">
+                                      <span className="font-bold text-terracotta text-xs">Order #{o.id}</span>
+                                      <span className="px-1.5 py-0.5 bg-swiss-dark text-white text-[8px] font-bold uppercase">
+                                        Table {o.tableNumber} • {o.status}
+                                      </span>
+                                    </div>
+                                    <div className="text-[9px] text-swiss-dark/70 border-b border-dashed border-swiss-dark/20 pb-1">
+                                      {o.items.map((it, idx) => (
+                                        <span key={idx} className="inline-block mr-2 font-semibold text-swiss-dark">
+                                          {it.quantity}x {it.name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="font-bold text-swiss-dark">Total: NPR {o.totalAmount}</span>
+                                      <span className="text-[8px] text-swiss-dark/50">{new Date(o.timestamp).toLocaleTimeString()}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* QUICK ADD NEW QR TABLE & QR GENERATOR FOR KITCHEN STAFF */}
@@ -3271,6 +5851,262 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* STAFF WORKSPACE SELECTION & NOTIFICATION HUD */}
+                <div className="bg-white border-2 border-swiss-dark p-6 space-y-4 font-mono text-xs">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div>
+                      <h3 className="text-sm font-black uppercase tracking-tight text-swiss-dark flex items-center gap-1.5">
+                        <User className="w-4 h-4 text-terracotta" />
+                        Staff Duty & Alert Terminal
+                      </h3>
+                      <p className="text-[10px] text-swiss-dark/70">
+                        Select your profile to check shift schedules, toggle attendance status, and receive direct dining room assignments.
+                      </p>
+                    </div>
+                    
+                    <div className="flex items-center gap-3 w-full md:w-auto">
+                      <select
+                        value={selectedStaffId || ""}
+                        onChange={(e) => setSelectedStaffId(e.target.value || null)}
+                        className="w-full md:w-64 bg-swiss-light border-2 border-swiss-dark p-2 text-xs font-bold text-swiss-dark focus:outline-none cursor-pointer"
+                      >
+                        <option value="">👤 Select Your Staff Profile...</option>
+                        {employees
+                          .filter(emp => emp.hotelId === currentHotelId)
+                          .map(emp => (
+                            <option key={emp.id} value={emp.id}>
+                              {emp.role === "Waiter" ? "🏃" : emp.role === "Kitchen Staff" ? "🧑‍🍳" : emp.role === "Cashier" ? "💵" : "👔"} {emp.name} ({emp.role})
+                            </option>
+                          ))
+                        }
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* IF STAFF IS SELECTED */}
+                  {selectedStaffId && (() => {
+                    const activeStaff = employees.find(emp => emp.id === selectedStaffId);
+                    if (!activeStaff) return null;
+                    
+                    const unreadCount = staffNotifications.filter(n => !n.read).length;
+                    
+                    // Find assigned tables (for Waiter role)
+                    const assignedTables = tables.filter(t => t.hotelId === currentHotelId && t.assignedWaiterId === selectedStaffId);
+                    // Find assigned orders (for active waiter / kitchen staff)
+                    const assignedOrders = orders.filter(o => o.hotelId === currentHotelId && o.assignedStaffId === selectedStaffId && o.status !== "Completed" && o.status !== "Cancelled");
+                    
+                    return (
+                      <div className="mt-4 pt-4 border-t-2 border-swiss-dark space-y-4 animate-fadeIn">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+                          
+                          {/* PROFILE INFO & SCHEDULE */}
+                          <div className="md:col-span-2 flex flex-col sm:flex-row gap-4 items-start sm:items-center bg-swiss-light p-3 border border-swiss-dark">
+                            <div className="p-2 bg-swiss-dark text-white font-bold rounded-sm text-center min-w-[50px]">
+                              {activeStaff.role === "Waiter" ? "🏃" : activeStaff.role === "Kitchen Staff" ? "🧑‍🍳" : "👔"}
+                            </div>
+                            <div>
+                              <div className="font-bold text-sm text-swiss-dark">{activeStaff.name}</div>
+                              <div className="text-[10px] text-swiss-dark/70 uppercase font-black">{activeStaff.role} • {activeHotel?.branches.find(b => b.id === activeStaff.branchId)?.name || activeStaff.branchId}</div>
+                              <div className="text-[10px] text-terracotta mt-0.5 font-bold">⏰ Shift: {activeStaff.schedule || "09:00 - 18:00"}</div>
+                            </div>
+                          </div>
+
+                          {/* ATTENDANCE TOGGLE (CLOCK IN/OUT) */}
+                          <div className="flex flex-col justify-center bg-swiss-light p-3 border border-swiss-dark">
+                            <span className="text-[9px] font-bold text-swiss-dark/60 uppercase block mb-1">Attendance Status</span>
+                            <div className="flex items-center gap-2">
+                              <span className={`px-2 py-1 text-[10px] font-black border uppercase ${
+                                activeStaff.attendance === "Present" 
+                                  ? "bg-emerald-100 text-emerald-800 border-emerald-500 animate-pulse" 
+                                  : "bg-rose-100 text-rose-800 border-rose-400"
+                              }`}>
+                                {activeStaff.attendance === "Present" ? "🟢 Present (On Duty)" : "🔴 Absent (Off Duty)"}
+                              </span>
+                              <button
+                                onClick={async () => {
+                                  const targetAttendance = activeStaff.attendance === "Present" ? "Absent" : "Present";
+                                  await handleUpdateEmployeeAttendance(activeStaff.id, targetAttendance);
+                                  // Refresh specific staff notifications after status change
+                                  setTimeout(() => fetchStaffNotifications(activeStaff.id), 300);
+                                }}
+                                className={`px-3 py-1 text-[10px] uppercase font-bold border-2 border-swiss-dark cursor-pointer transition-all ${
+                                  activeStaff.attendance === "Present" 
+                                    ? "bg-neutral-200 hover:bg-neutral-300 text-swiss-dark" 
+                                    : "bg-terracotta hover:bg-swiss-dark text-white"
+                                }`}
+                              >
+                                {activeStaff.attendance === "Present" ? "Clock Out" : "Clock In"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* NOTIFICATION CENTER BADGE */}
+                          <div className="relative bg-swiss-light p-3 border border-swiss-dark flex justify-between items-center">
+                            <div>
+                              <span className="text-[9px] font-bold text-swiss-dark/60 uppercase block mb-0.5">Staff Alerts</span>
+                              <button
+                                onClick={() => setIsStaffNotificationOpen(!isStaffNotificationOpen)}
+                                className="flex items-center gap-2 px-3 py-1 bg-white border-2 border-swiss-dark hover:bg-neutral-50 font-bold uppercase tracking-wider text-[10px] cursor-pointer"
+                              >
+                                <Bell className={`w-4 h-4 text-terracotta ${unreadCount > 0 ? "animate-bounce" : ""}`} />
+                                {unreadCount > 0 ? `${unreadCount} Alerts` : "No Alerts"}
+                              </button>
+                            </div>
+                            {unreadCount > 0 && (
+                              <span className="absolute -top-2.5 -right-2.5 bg-rose-600 text-white border-2 border-swiss-dark w-6 h-6 rounded-full flex items-center justify-center font-black text-[11px] animate-pulse">
+                                {unreadCount}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* NOTIFICATIONS EXPANDED DROPDOWN LIST */}
+                        {isStaffNotificationOpen && (
+                          <div className="bg-white border-2 border-swiss-dark p-4 space-y-3 animate-fadeIn">
+                            <div className="flex justify-between items-center pb-2 border-b border-swiss-dark">
+                              <span className="font-bold text-swiss-dark text-[11px] uppercase tracking-wider">Duty Alerts Ledger</span>
+                              <div className="flex gap-2">
+                                {unreadCount > 0 && (
+                                  <button
+                                    onClick={handleMarkAllNotificationsRead}
+                                    className="text-[9px] font-bold uppercase text-terracotta border border-terracotta px-2 py-0.5 hover:bg-terracotta hover:text-white cursor-pointer"
+                                  >
+                                    Acknowledge All
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => setIsStaffNotificationOpen(false)}
+                                  className="text-[9px] font-bold uppercase text-swiss-dark/60 border border-swiss-dark/30 px-2 py-0.5 hover:bg-swiss-light cursor-pointer"
+                                >
+                                  Close [X]
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                              {staffNotifications.length === 0 ? (
+                                <div className="p-4 text-center text-swiss-dark/40 italic font-mono text-[10px]">
+                                  No notifications recorded. Start shift or receive assigned tables to trigger alerts.
+                                </div>
+                              ) : (
+                                [...staffNotifications].reverse().map((n) => (
+                                  <div 
+                                    key={n.id} 
+                                    className={`border p-3 transition-all ${
+                                      n.read 
+                                        ? "bg-swiss-light/40 border-swiss-dark/10 opacity-60" 
+                                        : "bg-amber-50 border-amber-300 shadow-sm"
+                                    }`}
+                                  >
+                                    <div className="flex justify-between items-start gap-4">
+                                      <div className="flex gap-2 items-start">
+                                        <span className="text-base mt-0.5">
+                                          {n.type === "shift_start" ? "⏱️" : n.type === "table_assignment" ? "📌" : "🛎️"}
+                                        </span>
+                                        <div>
+                                          <p className={`text-[11px] font-semibold text-swiss-dark ${n.read ? "line-through text-swiss-dark/55" : ""}`}>
+                                            {n.message}
+                                          </p>
+                                          <span className="text-[9px] text-swiss-dark/50 block mt-1">
+                                            {new Date(n.timestamp).toLocaleTimeString()} • {new Date(n.timestamp).toLocaleDateString()}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      {!n.read && (
+                                        <button
+                                          onClick={() => handleMarkNotificationRead(n.id)}
+                                          className="bg-swiss-dark hover:bg-terracotta text-white px-2 py-0.5 text-[9px] font-bold uppercase cursor-pointer"
+                                        >
+                                          Acknowledge
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ASSIGNED TABLES AND ACTIVE ORDERS CARDS */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          
+                          {/* MY ASSIGNED TABLES */}
+                          <div className="border border-swiss-dark bg-swiss-light/30 p-4">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-swiss-dark/60 block mb-3 border-b border-swiss-dark/20 pb-1">
+                              📌 My Assigned Dining Tables ({assignedTables.length})
+                            </span>
+                            {assignedTables.length === 0 ? (
+                              <div className="p-4 text-center text-swiss-dark/50 italic text-[10px]">
+                                No specific tables assigned to you. Instruct corporate manager to set assignments in the Tables layout.
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-2 gap-2">
+                                {assignedTables.map(t => (
+                                  <div key={t.id} className="bg-white border border-swiss-dark p-2.5 font-mono text-[10px] space-y-1">
+                                    <div className="flex justify-between items-center">
+                                      <span className="font-black text-xs bg-swiss-dark text-white px-1.5 py-0.5">Table {t.number}</span>
+                                      <span className={`px-1.5 py-0.5 font-bold uppercase border text-[8px] ${
+                                        t.status === "Occupied" 
+                                          ? "bg-rose-50 text-rose-800 border-rose-300" 
+                                          : t.status === "Reserved"
+                                          ? "bg-amber-50 text-amber-800 border-amber-300"
+                                          : "bg-emerald-50 text-emerald-800 border-emerald-300"
+                                      }`}>
+                                        {t.status}
+                                      </span>
+                                    </div>
+                                    <p className="text-swiss-dark/70">Seats: <span className="font-bold">{t.seatingCapacity}</span></p>
+                                    {t.reservedName && <p className="text-swiss-dark/80 font-semibold truncate">Guest: {t.reservedName}</p>}
+                                    {t.reservedTime && <p className="text-swiss-dark/80 font-semibold text-[9px]">Time: {t.reservedTime}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* MY ACTIVE ORDERS */}
+                          <div className="border border-swiss-dark bg-swiss-light/30 p-4">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-swiss-dark/60 block mb-3 border-b border-swiss-dark/20 pb-1">
+                              🛎️ My Active Orders Queue ({assignedOrders.length})
+                            </span>
+                            {assignedOrders.length === 0 ? (
+                              <div className="p-4 text-center text-swiss-dark/50 italic text-[10px]">
+                                You have no active orders queued. Orders auto-assigned by the dynamic rebalancer will appear here.
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                {assignedOrders.map(o => (
+                                  <div key={o.id} className="bg-white border border-swiss-dark p-3.5 font-mono text-[10px] space-y-1.5">
+                                    <div className="flex justify-between items-center">
+                                      <span className="font-bold text-terracotta text-xs">Order #{o.id}</span>
+                                      <span className="px-1.5 py-0.5 bg-swiss-dark text-white text-[8px] font-bold uppercase">
+                                        Table {o.tableNumber} • {o.status}
+                                      </span>
+                                    </div>
+                                    <div className="text-[9px] text-swiss-dark/70 border-b border-dashed border-swiss-dark/20 pb-1">
+                                      {o.items.map((it, idx) => (
+                                        <span key={idx} className="inline-block mr-2 font-semibold text-swiss-dark">
+                                          {it.quantity}x {it.name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="font-bold text-swiss-dark">Total: NPR {o.totalAmount}</span>
+                                      <span className="text-[8px] text-swiss-dark/50">{new Date(o.timestamp).toLocaleTimeString()}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
                 {/* ACTIVE SERVICE CALL ALERTS */}
                 <div className="bg-white border-2 border-swiss-dark p-6">
                   <h3 className="text-lg font-bold uppercase tracking-tight mb-4 pb-2 border-b border-swiss-dark flex items-center gap-2">
@@ -3287,10 +6123,29 @@ export default function App() {
                             <span className="text-[10px] text-swiss-dark/60">{new Date(sc.timestamp).toLocaleTimeString()}</span>
                           </div>
                           <p className="text-sm font-bold text-terracotta uppercase">{sc.type}</p>
+                          
+                          <div className="mt-2.5 pt-2 border-t border-dashed border-swiss-dark/20 text-left">
+                            <span className="text-[9px] font-bold text-swiss-dark/60 uppercase block">Assigned Waiter:</span>
+                            <select
+                              value={sc.assignedWaiterId || ""}
+                              onChange={(e) => handleReassignWaiterForServiceCall(sc.id, e.target.value)}
+                              className="w-full bg-white border border-swiss-dark text-[9px] font-mono font-semibold p-1 mt-1 focus:outline-none cursor-pointer"
+                            >
+                              <option value="">⚡ Auto-balanced Workload</option>
+                              {employees
+                                .filter(e => e.hotelId === currentHotelId && e.branchId === currentBranchId && e.role === "Waiter" && e.attendance === "Present")
+                                .map(waiter => (
+                                  <option key={waiter.id} value={waiter.id}>
+                                    🏃 {waiter.name}
+                                  </option>
+                                ))
+                              }
+                            </select>
+                          </div>
                         </div>
                         <button 
                           onClick={() => handleResolveServiceCall(sc.id)}
-                          className="mt-3 w-full bg-swiss-dark hover:bg-terracotta text-white py-1.5 font-bold uppercase text-[10px] cursor-pointer"
+                          className="mt-3.5 w-full bg-swiss-dark hover:bg-terracotta text-white py-1.5 font-bold uppercase text-[10px] cursor-pointer"
                         >
                           Resolve Alert
                         </button>
@@ -3302,6 +6157,96 @@ export default function App() {
                         No pending guest alerts from tables.
                       </div>
                     )}
+                  </div>
+                </div>
+
+                {/* 🏃 WAITER WORKLOAD & PLACEMENT OPTIMIZER */}
+                <div id="waiter-workload-optimizer" className="bg-white border-2 border-swiss-dark p-6 space-y-4">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-swiss-dark">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Users className="w-5 h-5 text-terracotta" />
+                        <h3 className="text-base font-black uppercase tracking-tight">Waiter Assignment & Workload Optimizer</h3>
+                      </div>
+                      <p className="text-xs font-mono text-swiss-dark/70 mt-1">
+                        Monitor active dining room workloads, balance table sections, and trigger automated personnel load-balancing.
+                      </p>
+                    </div>
+                    
+                    <button
+                      type="button"
+                      onClick={handleAutoOptimizeWaiterAssignments}
+                      className="flex items-center gap-2 bg-swiss-dark hover:bg-terracotta text-white px-4 py-2 text-xs font-mono font-bold uppercase transition-all tracking-wider cursor-pointer border border-swiss-dark"
+                    >
+                      ⚡ Auto-Optimize Table Sections
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 font-mono text-xs">
+                    {/* Active Staff List with visual workload metrics */}
+                    <div className="md:col-span-2 space-y-3">
+                      <span className="text-[10px] font-black uppercase text-swiss-dark/60 tracking-wider">Active Wait Staff Status & Workload</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        {employees
+                          .filter(e => e.hotelId === currentHotelId && e.branchId === currentBranchId && e.role === "Waiter" && e.attendance === "Present")
+                          .map(waiter => {
+                            const assignedTables = tables.filter(t => t.hotelId === currentHotelId && t.branchId === currentBranchId && t.assignedWaiterId === waiter.id);
+                            const pendingCalls = serviceCalls.filter(sc => sc.status === "Pending" && sc.assignedWaiterId === waiter.id);
+                            const totalCap = assignedTables.reduce((sum, t) => sum + t.seatingCapacity, 0);
+
+                            return (
+                              <div key={waiter.id} className="border border-swiss-dark p-3 bg-swiss-light relative">
+                                <div className="absolute top-3 right-3 flex items-center gap-1.5">
+                                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                  <span className="text-[8px] font-bold text-emerald-700 uppercase">On Duty</span>
+                                </div>
+                                <div className="font-bold text-swiss-dark text-sm mb-1">{waiter.name}</div>
+                                <div className="text-[9px] uppercase font-bold text-terracotta">Section Weight: {totalCap} Seats</div>
+
+                                <div className="grid grid-cols-2 gap-2 mt-3.5 pt-2.5 border-t border-dashed border-swiss-dark/20 text-[10px]">
+                                  <div>
+                                    <span className="text-[8px] text-neutral-400 block uppercase font-bold">Assigned Tables</span>
+                                    <strong className="text-swiss-dark text-xs">
+                                      {assignedTables.length > 0 
+                                        ? assignedTables.map(t => `#${t.number}`).join(", ") 
+                                        : "None"
+                                      }
+                                    </strong>
+                                  </div>
+                                  <div>
+                                    <span className="text-[8px] text-neutral-400 block uppercase font-bold">Active Alerts</span>
+                                    <strong className={`text-xs ${pendingCalls.length > 0 ? "text-terracotta animate-pulse" : "text-emerald-700"}`}>
+                                      {pendingCalls.length} Pending
+                                    </strong>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })
+                        }
+                        {employees.filter(e => e.hotelId === currentHotelId && e.branchId === currentBranchId && e.role === "Waiter" && e.attendance === "Present").length === 0 && (
+                          <div className="col-span-full p-6 text-center border border-dashed border-swiss-dark/30 text-swiss-dark/50 italic bg-white">
+                            No waiters are currently marked as "Present" in attendance. Mark waiters present in the Staff Registry to activate workload monitoring.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Explanation of the Optimization Engine */}
+                    <div className="bg-sand-light border border-swiss-dark p-4 flex flex-col justify-between">
+                      <div>
+                        <h4 className="font-bold uppercase tracking-wider text-[10px] text-swiss-dark mb-2">Mathematical Section Balancer</h4>
+                        <p className="text-[10px] leading-relaxed text-swiss-dark/80">
+                          The optimizer utilizes a greedy multi-way partition algorithm to minimize personnel variance. It sorts physical tables by size and maps them sequentially to active servers to balance the total aggregate seating capacity of assigned dining zones.
+                        </p>
+                        <div className="mt-3 p-2 bg-white border border-swiss-gray text-[9px] leading-relaxed text-terracotta">
+                          <strong>⚡ Workload-Aware Routing:</strong> Guest service alerts are automatically dispatched directly to the table's assigned waiter, or load-balanced to the waiter with the lowest concurrent alert queue.
+                        </div>
+                      </div>
+                      <div className="pt-4 border-t border-dashed border-swiss-dark/20 text-[10px] font-black text-swiss-dark/60 uppercase">
+                        Active Branch: {activeBranch?.name || "None"}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -3356,6 +6301,25 @@ export default function App() {
                                     {t.reservedTime && <span className="block font-semibold">Time: {t.reservedTime}</span>}
                                   </div>
                                 )}
+
+                                <div className="mt-2.5 pt-2 border-t border-dashed border-swiss-dark/20 text-left">
+                                  <span className="text-[9px] font-bold text-swiss-dark/60 uppercase block">Assigned Waiter:</span>
+                                  <select
+                                    value={t.assignedWaiterId || ""}
+                                    onChange={(e) => handleAssignWaiterToTable(t.id, e.target.value)}
+                                    className="w-full bg-white border border-swiss-dark text-[10px] font-mono font-semibold p-1 mt-1 focus:outline-none cursor-pointer"
+                                  >
+                                    <option value="">⚠️ Unassigned</option>
+                                    {employees
+                                      .filter(e => e.hotelId === currentHotelId && e.branchId === currentBranchId && e.role === "Waiter" && e.attendance === "Present")
+                                      .map(waiter => (
+                                        <option key={waiter.id} value={waiter.id}>
+                                          🏃 {waiter.name}
+                                        </option>
+                                      ))
+                                    }
+                                  </select>
+                                </div>
                               </div>
 
                               {activeOrder && (
@@ -3630,7 +6594,7 @@ export default function App() {
                       Himalayan AI Butler Service
                     </h3>
                     <p className="text-xs font-mono text-swiss-dark/70 mb-4">
-                      Type dietary constraints, budget limits, or spicy preferences naturally below. No emojis.
+                      Engage with your Swiss-trained AI Butler in a continuous, interactive dialogue. No emojis.
                     </p>
 
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -3638,42 +6602,118 @@ export default function App() {
                       <div className="space-y-2">
                         <span className="text-[10px] font-mono uppercase text-swiss-dark/60 block font-bold">Suggested Inquiries</span>
                         <button 
-                          onClick={() => {
-                            setGuestAiQuery("I want something spicy.");
-                            handleAiRecommend("I want something spicy.");
-                          }}
+                          onClick={() => handleAiRecommend("I want something spicy.")}
                           className="w-full text-left bg-white hover:bg-swiss-gray p-2 border border-swiss-dark font-mono text-[10px] block cursor-pointer"
                         >
                           "I want something spicy."
                         </button>
                         <button 
-                          onClick={() => {
-                            setGuestAiQuery("I have a peanut allergy.");
-                            handleAiRecommend("I have a peanut allergy.");
-                          }}
+                          onClick={() => handleAiRecommend("I have a peanut allergy.")}
                           className="w-full text-left bg-white hover:bg-swiss-gray p-2 border border-swiss-dark font-mono text-[10px] block cursor-pointer"
                         >
                           "I have a peanut allergy."
                         </button>
                         <button 
-                          onClick={() => {
-                            setGuestAiQuery("I have NPR 800 budget.");
-                            handleAiRecommend("I have NPR 800 budget.");
-                          }}
+                          onClick={() => handleAiRecommend("I have NPR 800 budget.")}
                           className="w-full text-left bg-white hover:bg-swiss-gray p-2 border border-swiss-dark font-mono text-[10px] block cursor-pointer"
                         >
                           "I have NPR 800 budget."
                         </button>
+                        <button 
+                          onClick={() => handleAiRecommend("Recommend some local traditional specialities.")}
+                          className="w-full text-left bg-white hover:bg-swiss-gray p-2 border border-swiss-dark font-mono text-[10px] block cursor-pointer"
+                        >
+                          "Recommend local dishes."
+                        </button>
+                        
+                        <button
+                          onClick={() => setGuestAiHistory([{
+                            sender: "butler",
+                            text: "Namaste. I am your Swiss-trained Himalayan AI Butler. How may I elevate your culinary experience today? I can assist with recommendations based on dietary constraints, budget limits, spicy preferences, or ideal local pairings."
+                          }])}
+                          className="w-full text-center hover:bg-terracotta hover:text-white text-swiss-dark/70 p-1 border border-dashed border-swiss-dark/40 font-mono text-[9px] block cursor-pointer mt-4"
+                        >
+                          Clear Chat History
+                        </button>
                       </div>
 
-                      {/* INPUT CHAT SECTION */}
-                      <div className="md:col-span-3 space-y-3">
+                      {/* CONVERSATIONAL CHAT SCREEN */}
+                      <div className="md:col-span-3 flex flex-col h-full min-h-[300px] justify-between">
+                        <div className="max-h-[350px] overflow-y-auto space-y-3 p-3 bg-white border-2 border-swiss-dark mb-3">
+                          {guestAiHistory.map((msg, idx) => (
+                            <div key={idx} className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}>
+                              <div className={`max-w-[85%] p-3 font-mono text-xs leading-relaxed ${
+                                msg.sender === "user" 
+                                  ? "bg-swiss-dark text-white rounded-br-none" 
+                                  : "bg-sand-light text-swiss-dark border border-swiss-dark rounded-bl-none"
+                              }`}>
+                                <span className={`font-bold text-[10px] uppercase block mb-1 tracking-wider ${
+                                  msg.sender === "user" ? "text-swiss-gray" : "text-terracotta"
+                                }`}>
+                                  {msg.sender === "user" ? "Guest Inquiry" : "Himalayan AI Butler"}
+                                </span>
+                                <div className="whitespace-pre-line">{msg.text}</div>
+
+                                {/* Curated Items click-to-add action buttons */}
+                                {msg.suggestedItemIds && msg.suggestedItemIds.length > 0 && (
+                                  <div className="mt-3 pt-3 border-t border-swiss-dark/20 space-y-2">
+                                    <span className="font-bold text-[9px] uppercase tracking-wider text-swiss-dark block">Butler Curated Items:</span>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                      {msg.suggestedItemIds.map(itemId => {
+                                        const item = menuItems.find(m => m.id === itemId && m.hotelId === currentHotelId);
+                                        if (!item) return null;
+                                        return (
+                                          <div key={item.id} className="bg-white border border-swiss-dark p-2 flex flex-col justify-between">
+                                            <div className="flex gap-2">
+                                              {item.image && (
+                                                <img 
+                                                  src={item.image} 
+                                                  alt={item.name} 
+                                                  className="w-10 h-10 object-cover border border-swiss-dark" 
+                                                  referrerPolicy="no-referrer" 
+                                                />
+                                              )}
+                                              <div className="flex-1 min-w-0">
+                                                <h4 className="font-bold text-[10px] truncate">{item.name}</h4>
+                                                <span className="text-[9px] font-bold text-terracotta block">NPR {item.price}</span>
+                                              </div>
+                                            </div>
+                                            <button
+                                              onClick={() => {
+                                                const existing = cart.find(c => c.menuItem.id === item.id);
+                                                if (existing) {
+                                                  setCart(cart.map(c => c.menuItem.id === item.id ? { ...c, quantity: c.quantity + 1 } : c));
+                                                } else {
+                                                  setCart([...cart, { menuItem: item, quantity: 1, notes: "Butler recommended pairing" }]);
+                                                }
+                                              }}
+                                              className="w-full mt-2 bg-swiss-dark hover:bg-terracotta text-white font-bold text-[9px] uppercase py-1 border-none cursor-pointer flex items-center justify-center gap-1"
+                                            >
+                                              <Plus className="w-3 h-3" /> Add to Order
+                                            </button>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* INPUT BOX */}
                         <div className="flex gap-2 font-mono">
                           <input 
                             type="text" 
                             value={guestAiQuery}
                             onChange={(e) => setGuestAiQuery(e.target.value)}
-                            placeholder="Type naturally e.g. I am a vegetarian looking for high protein..."
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                handleAiRecommend();
+                              }
+                            }}
+                            placeholder="Type naturally e.g. What vegetarian high-protein options do you suggest?..."
                             className="flex-1 bg-white border-2 border-swiss-dark p-2 text-xs focus:outline-none focus:border-terracotta"
                           />
                           <button 
@@ -3684,13 +6724,6 @@ export default function App() {
                             {aiLoading ? "Consulting..." : "Consult Butler"}
                           </button>
                         </div>
-
-                        {guestAiResponse && (
-                          <div className="bg-white border border-swiss-dark p-4 font-mono text-xs text-swiss-dark leading-relaxed whitespace-pre-line">
-                            <span className="font-bold text-terracotta uppercase block mb-1">AI butler recommendation:</span>
-                            {guestAiResponse}
-                          </div>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -3758,6 +6791,7 @@ export default function App() {
                             src={item.image} 
                             alt={item.name} 
                             className="w-full h-44 object-cover border-b-2 border-swiss-dark"
+                            referrerPolicy="no-referrer"
                           />
                           <div className="p-4 flex-1 flex flex-col justify-between">
                             <div>

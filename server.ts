@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import compression from "compression";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import fs from "fs";
 
 dotenv.config();
 
@@ -25,6 +26,22 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
+
+// Intercept all mutating requests (POST, PUT, DELETE, PATCH) to auto-save application state to disk
+app.use((req, res, next) => {
+  const isMutating = ["POST", "PUT", "DELETE", "PATCH"].includes(req.method);
+  if (isMutating) {
+    res.on("finish", () => {
+      // Save state only on successful responses to avoid saving invalid/bad-request state
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        if (typeof saveStateToDisk === "function") {
+          saveStateToDisk();
+        }
+      }
+    });
+  }
+  next();
+});
 
 const PORT = 3000;
 
@@ -60,7 +77,7 @@ interface Hotel {
   secondaryColor: string;
   font?: string;
   currency: string;
-  branches: { id: string; name: string; location: string }[];
+  branches: { id: string; name: string; location: string; contactPhone?: string; operatingHours?: string; status?: "Approved" | "PendingApproval" }[];
   username?: string;
   password?: string;
 }
@@ -75,6 +92,8 @@ interface Table {
   status: "Vacant" | "Occupied" | "Reserved";
   reservedName?: string;
   reservedTime?: string;
+  assignedWaiterId?: string;
+  assignedWaiterName?: string;
 }
 
 interface MenuItem {
@@ -91,6 +110,7 @@ interface MenuItem {
   prepTime: string;
   isAvailable: boolean;
   isPopular: boolean;
+  branchAvailability?: string[];
 }
 
 interface Order {
@@ -131,6 +151,16 @@ interface Employee {
   branchId: string;
   attendance: "Present" | "Absent" | "On Leave";
   schedule: string;
+  weeklyShifts?: {
+    Monday?: string;
+    Tuesday?: string;
+    Wednesday?: string;
+    Thursday?: string;
+    Friday?: string;
+    Saturday?: string;
+    Sunday?: string;
+  };
+  hourlyRate?: number;
 }
 
 interface Room {
@@ -153,7 +183,21 @@ interface ServiceCall {
   type: "Call Waiter" | "Request Bill" | "Water Refill";
   status: "Pending" | "Resolved";
   timestamp: string;
+  assignedWaiterId?: string;
+  assignedWaiterName?: string;
 }
+
+interface StaffNotification {
+  id: string;
+  hotelId: string;
+  employeeId: string;
+  message: string;
+  type: "shift_start" | "table_assignment" | "order_assignment";
+  timestamp: string;
+  read: boolean;
+}
+
+const staffNotifications: StaffNotification[] = [];
 
 // Initial Seeds
 const hotels: Hotel[] = [
@@ -169,8 +213,8 @@ const hotels: Hotel[] = [
     font: "Inter",
     currency: "NPR",
     branches: [
-      { id: "b-ktm", name: "Kathmandu Durbar Marg", location: "Durbar Marg, Kathmandu" },
-      { id: "b-pkr", name: "Lakeside Pokhara", location: "Lakeside, Pokhara" }
+      { id: "b-ktm", name: "Kathmandu Durbar Marg", location: "Durbar Marg, Kathmandu", status: "Approved" },
+      { id: "b-pkr", name: "Lakeside Pokhara", location: "Lakeside, Pokhara", status: "Approved" }
     ],
     username: "yeti",
     password: "yeti123"
@@ -187,7 +231,7 @@ const hotels: Hotel[] = [
     font: "Space Grotesk",
     currency: "NPR",
     branches: [
-      { id: "b-bkt", name: "Bhaktapur Square", location: "Bhaktapur Durbar Square" }
+      { id: "b-bkt", name: "Bhaktapur Square", location: "Bhaktapur Durbar Square", status: "Approved" }
     ],
     username: "java",
     password: "java123"
@@ -477,11 +521,101 @@ const stockItems: StockItem[] = [
 ];
 
 const employees: Employee[] = [
-  { id: "e-1", hotelId: "h-yak-yeti", name: "Subash Tamang", role: "Manager", branchId: "b-ktm", attendance: "Present", schedule: "09:00 - 18:00" },
-  { id: "e-2", hotelId: "h-yak-yeti", name: "Sita Sharma", role: "Cashier", branchId: "b-ktm", attendance: "Present", schedule: "08:00 - 16:00" },
-  { id: "e-3", hotelId: "h-yak-yeti", name: "Niranjan Shrestha", role: "Kitchen Staff", branchId: "b-ktm", attendance: "Present", schedule: "11:00 - 22:00" },
-  { id: "e-4", hotelId: "h-yak-yeti", name: "Maya Lama", role: "Housekeeping", branchId: "b-ktm", attendance: "Present", schedule: "07:00 - 15:00" },
-  { id: "e-5", hotelId: "h-yak-yeti", name: "Ram Bahadur", role: "Waiter", branchId: "b-ktm", attendance: "Present", schedule: "12:00 - 21:00" }
+  { 
+    id: "e-1", 
+    hotelId: "h-yak-yeti", 
+    name: "Subash Tamang", 
+    role: "Manager", 
+    branchId: "b-ktm", 
+    attendance: "Present", 
+    schedule: "09:00 - 18:00",
+    hourlyRate: 400,
+    weeklyShifts: {
+      Monday: "09:00 - 18:00",
+      Tuesday: "09:00 - 18:00",
+      Wednesday: "09:00 - 18:00",
+      Thursday: "09:00 - 18:00",
+      Friday: "09:00 - 18:00",
+      Saturday: "Off",
+      Sunday: "Off"
+    }
+  },
+  { 
+    id: "e-2", 
+    hotelId: "h-yak-yeti", 
+    name: "Sita Sharma", 
+    role: "Cashier", 
+    branchId: "b-ktm", 
+    attendance: "Present", 
+    schedule: "08:00 - 16:00",
+    hourlyRate: 250,
+    weeklyShifts: {
+      Monday: "08:00 - 16:00",
+      Tuesday: "08:00 - 16:00",
+      Wednesday: "08:00 - 16:00",
+      Thursday: "08:00 - 16:00",
+      Friday: "08:00 - 16:00",
+      Saturday: "Off",
+      Sunday: "Off"
+    }
+  },
+  { 
+    id: "e-3", 
+    hotelId: "h-yak-yeti", 
+    name: "Niranjan Shrestha", 
+    role: "Kitchen Staff", 
+    branchId: "b-ktm", 
+    attendance: "Present", 
+    schedule: "11:00 - 22:00",
+    hourlyRate: 220,
+    weeklyShifts: {
+      Monday: "11:00 - 22:00",
+      Tuesday: "11:00 - 22:00",
+      Wednesday: "11:00 - 22:00",
+      Thursday: "11:00 - 22:00",
+      Friday: "11:00 - 22:00",
+      Saturday: "11:00 - 22:00",
+      Sunday: "Off"
+    }
+  },
+  { 
+    id: "e-4", 
+    hotelId: "h-yak-yeti", 
+    name: "Maya Lama", 
+    role: "Housekeeping", 
+    branchId: "b-ktm", 
+    attendance: "Present", 
+    schedule: "07:00 - 15:00",
+    hourlyRate: 180,
+    weeklyShifts: {
+      Monday: "07:00 - 15:00",
+      Tuesday: "07:00 - 15:00",
+      Wednesday: "07:00 - 15:00",
+      Thursday: "07:00 - 15:00",
+      Friday: "07:00 - 15:00",
+      Saturday: "Off",
+      Sunday: "Off"
+    }
+  },
+  { 
+    id: "e-5", 
+    hotelId: "h-yak-yeti", 
+    name: "Ram Bahadur", 
+    role: "Waiter", 
+    branchId: "b-ktm", 
+    attendance: "Present", 
+    schedule: "12:00 - 21:00",
+    hourlyRate: 200,
+    weeklyShifts: {
+      Monday: "12:00 - 21:00",
+      Tuesday: "12:00 - 21:00",
+      Wednesday: "12:00 - 21:00",
+      Thursday: "12:00 - 21:00",
+      Friday: "12:00 - 21:00",
+      Saturday: "12:00 - 21:00",
+      Sunday: "Off"
+    }
+  }
 ];
 
 const rooms: Room[] = [
@@ -495,9 +629,105 @@ const serviceCalls: ServiceCall[] = [
   { id: "sc-1", hotelId: "h-yak-yeti", branchId: "b-ktm", tableId: "t-2", tableNumber: "02", type: "Call Waiter", status: "Pending", timestamp: new Date().toISOString() }
 ];
 
+// --- DISK STATE PERSISTENCE SYSTEM ---
+const STORE_PATH = path.join(process.cwd(), "server_store.json");
+
+function saveStateToDisk() {
+  try {
+    const data = {
+      hotels,
+      tables,
+      menuItems,
+      orders,
+      stockItems,
+      employees,
+      rooms,
+      serviceCalls,
+      staffNotifications,
+      activeBalancingAlgorithm,
+      autoBalancingEnabled
+    };
+    fs.writeFileSync(STORE_PATH, JSON.stringify(data, null, 2), "utf-8");
+    console.log("State successfully saved to disk.");
+  } catch (err) {
+    console.error("Failed to save state to disk:", err);
+  }
+}
+
+// Ensure state is written to disk on standard process termination signals
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received, saving state...");
+  saveStateToDisk();
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  console.log("SIGINT received, saving state...");
+  saveStateToDisk();
+  process.exit(0);
+});
+
+function loadStateFromDisk() {
+  try {
+    if (fs.existsSync(STORE_PATH)) {
+      const content = fs.readFileSync(STORE_PATH, "utf-8");
+      if (content.trim()) {
+        const data = JSON.parse(content);
+        if (data.hotels && Array.isArray(data.hotels)) {
+          hotels.length = 0;
+          hotels.push(...data.hotels);
+        }
+        if (data.tables && Array.isArray(data.tables)) {
+          tables.length = 0;
+          tables.push(...data.tables);
+        }
+        if (data.menuItems && Array.isArray(data.menuItems)) {
+          menuItems.length = 0;
+          menuItems.push(...data.menuItems);
+        }
+        if (data.orders && Array.isArray(data.orders)) {
+          orders.length = 0;
+          orders.push(...data.orders);
+        }
+        if (data.stockItems && Array.isArray(data.stockItems)) {
+          stockItems.length = 0;
+          stockItems.push(...data.stockItems);
+        }
+        if (data.employees && Array.isArray(data.employees)) {
+          employees.length = 0;
+          employees.push(...data.employees);
+        }
+        if (data.rooms && Array.isArray(data.rooms)) {
+          rooms.length = 0;
+          rooms.push(...data.rooms);
+        }
+        if (data.serviceCalls && Array.isArray(data.serviceCalls)) {
+          serviceCalls.length = 0;
+          serviceCalls.push(...data.serviceCalls);
+        }
+        if (data.staffNotifications && Array.isArray(data.staffNotifications)) {
+          staffNotifications.length = 0;
+          staffNotifications.push(...data.staffNotifications);
+        }
+        if (data.activeBalancingAlgorithm !== undefined) {
+          activeBalancingAlgorithm = data.activeBalancingAlgorithm;
+        }
+        if (data.autoBalancingEnabled !== undefined) {
+          autoBalancingEnabled = data.autoBalancingEnabled;
+        }
+        console.log("State successfully loaded from server_store.json file.");
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load state from disk:", err);
+  }
+}
+
 // --- ORDER LOAD BALANCING ENGINE STATE & HELPER ---
 let activeBalancingAlgorithm = "RoundRobin"; // "RoundRobin" | "LeastWorkload" | "QueueDepth" | "Manual"
 let autoBalancingEnabled = true;
+
+// Perform initial load
+loadStateFromDisk();
 
 function balanceAndAssignOrder(order: Order) {
   if (!autoBalancingEnabled || activeBalancingAlgorithm === "Manual") return;
@@ -578,6 +808,16 @@ function balanceAndAssignOrder(order: Order) {
     order.assignedStaffId = chosenStaff.id;
     order.assignedStaffName = chosenStaff.name;
     console.log(`[Load Balancer] Auto-assigned Order #${order.id} to ${chosenStaff.name} using ${activeBalancingAlgorithm} algorithm.`);
+    
+    staffNotifications.push({
+      id: `sn-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      hotelId: order.hotelId,
+      employeeId: chosenStaff.id,
+      message: `New Order #${order.id} auto-assigned to you for Table #${order.tableNumber}.`,
+      type: "order_assignment",
+      timestamp: new Date().toISOString(),
+      read: false
+    });
   }
 }
 
@@ -663,7 +903,17 @@ app.post("/api/hotels", (req, res) => {
     role: "Manager",
     branchId: `b-${id}-main`,
     attendance: "Present",
-    schedule: "09:00 - 18:00"
+    schedule: "09:00 - 18:00",
+    hourlyRate: 400,
+    weeklyShifts: {
+      Monday: "09:00 - 18:00",
+      Tuesday: "09:00 - 18:00",
+      Wednesday: "09:00 - 18:00",
+      Thursday: "09:00 - 18:00",
+      Friday: "09:00 - 18:00",
+      Saturday: "Off",
+      Sunday: "Off"
+    }
   });
 
   res.status(201).json(newHotel);
@@ -693,7 +943,7 @@ app.post("/api/hotels/login", (req, res) => {
 
 app.put("/api/hotels/:id", (req, res) => {
   const { id } = req.params;
-  const { status, plan, name, tagline, primaryColor, secondaryColor, font } = req.body;
+  const { status, plan, name, tagline, primaryColor, secondaryColor, font, username, password } = req.body;
   const idx = hotels.findIndex(h => h.id === id);
   if (idx === -1) return res.status(404).json({ error: "Hotel not found" });
 
@@ -704,8 +954,107 @@ app.put("/api/hotels/:id", (req, res) => {
   if (primaryColor) hotels[idx].primaryColor = primaryColor;
   if (secondaryColor) hotels[idx].secondaryColor = secondaryColor;
   if (font) hotels[idx].font = font;
+  if (username !== undefined) hotels[idx].username = username;
+  if (password !== undefined) hotels[idx].password = password;
 
   res.json(hotels[idx]);
+});
+
+// --- Branch Management Endpoints ---
+app.post("/api/hotels/:id/branches", (req, res) => {
+  const { id } = req.params;
+  const { name, location, contactPhone, operatingHours, autoCreateTables, status } = req.body;
+  if (!name) return res.status(400).json({ error: "Branch name is required." });
+
+  const idx = hotels.findIndex(h => h.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Hotel not found" });
+
+  const branchId = `b-${Date.now()}`;
+  const branchStatus = status || "PendingApproval";
+  const newBranch = { 
+    id: branchId, 
+    name, 
+    location: location || "",
+    contactPhone: contactPhone || "",
+    operatingHours: operatingHours || "09:00 - 22:00",
+    status: branchStatus
+  };
+  
+  if (!hotels[idx].branches) {
+    hotels[idx].branches = [];
+  }
+  hotels[idx].branches.push(newBranch);
+
+  // Auto-generate QR Tables if requested
+  if (autoCreateTables && typeof autoCreateTables === "number" && autoCreateTables > 0) {
+    const limit = Math.min(autoCreateTables, 20); // safety cap
+    for (let i = 1; i <= limit; i++) {
+      const tableNum = i < 10 ? `0${i}` : `${i}`;
+      const tableId = `t-${id}-${branchId}-${i}`;
+      tables.push({
+        id: tableId,
+        hotelId: id,
+        branchId,
+        number: tableNum,
+        seatingCapacity: 4,
+        qrUrl: `${id}/${branchId}/${tableId}`,
+        status: "Vacant"
+      });
+    }
+  }
+
+  // Save changes to disk
+  if (typeof saveStateToDisk === "function") {
+    saveStateToDisk();
+  }
+
+  res.status(201).json({ success: true, branch: newBranch, hotel: hotels[idx] });
+});
+
+app.post("/api/hotels/:id/branches/:branchId/approve", (req, res) => {
+  const { id, branchId } = req.params;
+  const hotelIdx = hotels.findIndex(h => h.id === id);
+  if (hotelIdx === -1) return res.status(404).json({ error: "Hotel not found" });
+
+  const branch = hotels[hotelIdx].branches.find(b => b.id === branchId);
+  if (!branch) return res.status(404).json({ error: "Branch not found" });
+
+  branch.status = "Approved";
+
+  // Save changes to disk
+  if (typeof saveStateToDisk === "function") {
+    saveStateToDisk();
+  }
+
+  res.json({ success: true, hotel: hotels[hotelIdx] });
+});
+
+app.put("/api/hotels/:id/branches/:branchId", (req, res) => {
+  const { id, branchId } = req.params;
+  const { name, location, contactPhone, operatingHours } = req.body;
+
+  const idx = hotels.findIndex(h => h.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Hotel not found" });
+
+  const branchIdx = hotels[idx].branches.findIndex(b => b.id === branchId);
+  if (branchIdx === -1) return res.status(404).json({ error: "Branch not found" });
+
+  if (name) hotels[idx].branches[branchIdx].name = name;
+  if (location !== undefined) hotels[idx].branches[branchIdx].location = location;
+  if (contactPhone !== undefined) hotels[idx].branches[branchIdx].contactPhone = contactPhone;
+  if (operatingHours !== undefined) hotels[idx].branches[branchIdx].operatingHours = operatingHours;
+
+  res.json({ success: true, branch: hotels[idx].branches[branchIdx], hotel: hotels[idx] });
+});
+
+app.delete("/api/hotels/:id/branches/:branchId", (req, res) => {
+  const { id, branchId } = req.params;
+
+  const idx = hotels.findIndex(h => h.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Hotel not found" });
+
+  hotels[idx].branches = hotels[idx].branches.filter(b => b.id !== branchId);
+  res.json({ success: true, hotel: hotels[idx] });
 });
 
 // 2. Table / QR Code generation
@@ -740,13 +1089,31 @@ app.post("/api/tables", (req, res) => {
 
 app.put("/api/tables/:id", (req, res) => {
   const { id } = req.params;
-  const { status, reservedName, reservedTime } = req.body;
+  const { status, reservedName, reservedTime, assignedWaiterId, assignedWaiterName } = req.body;
   const idx = tables.findIndex(t => t.id === id);
   if (idx === -1) return res.status(404).json({ error: "Table not found" });
 
   if (status !== undefined) tables[idx].status = status;
   if (reservedName !== undefined) tables[idx].reservedName = reservedName;
   if (reservedTime !== undefined) tables[idx].reservedTime = reservedTime;
+  if (assignedWaiterId !== undefined) {
+    const oldWaiterId = tables[idx].assignedWaiterId;
+    tables[idx].assignedWaiterId = assignedWaiterId;
+    
+    // Generate notification if a new waiter is assigned
+    if (assignedWaiterId && assignedWaiterId !== oldWaiterId) {
+      staffNotifications.push({
+        id: `sn-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        hotelId: tables[idx].hotelId,
+        employeeId: assignedWaiterId,
+        message: `You have been assigned to Table #${tables[idx].number} (Seating capacity: ${tables[idx].seatingCapacity} guests).`,
+        type: "table_assignment",
+        timestamp: new Date().toISOString(),
+        read: false
+      });
+    }
+  }
+  if (assignedWaiterName !== undefined) tables[idx].assignedWaiterName = assignedWaiterName;
 
   res.json(tables[idx]);
 });
@@ -792,6 +1159,26 @@ app.delete("/api/menu/:id", (req, res) => {
   if (idx === -1) return res.status(404).json({ error: "Menu item not found" });
   const removedItem = menuItems.splice(idx, 1)[0];
   res.json({ message: "Menu item removed successfully", item: removedItem });
+});
+
+app.put("/api/menu/:id", (req, res) => {
+  const { id } = req.params;
+  const { name, category, price, description, prepTime, isAvailable, ingredients, allergens, branchAvailability } = req.body;
+  
+  const idx = menuItems.findIndex(m => m.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Menu item not found" });
+
+  if (name !== undefined) menuItems[idx].name = name;
+  if (category !== undefined) menuItems[idx].category = category;
+  if (price !== undefined) menuItems[idx].price = Number(price);
+  if (description !== undefined) menuItems[idx].description = description;
+  if (prepTime !== undefined) menuItems[idx].prepTime = prepTime;
+  if (isAvailable !== undefined) menuItems[idx].isAvailable = isAvailable;
+  if (ingredients !== undefined) menuItems[idx].ingredients = ingredients;
+  if (allergens !== undefined) menuItems[idx].allergens = allergens;
+  if (branchAvailability !== undefined) menuItems[idx].branchAvailability = branchAvailability;
+
+  res.json({ success: true, item: menuItems[idx] });
 });
 
 // 4. Order Management
@@ -881,6 +1268,43 @@ app.post("/api/service-calls", (req, res) => {
     return res.status(400).json({ error: "Missing service call request info" });
   }
 
+  const tableObj = tables.find(t => t.id === tableId);
+  let resolvedWaiterId: string | undefined = undefined;
+  let resolvedWaiterName: string | undefined = undefined;
+
+  if (tableObj && tableObj.assignedWaiterId) {
+    const assignedEmp = employees.find(e => e.id === tableObj.assignedWaiterId && e.attendance === "Present");
+    if (assignedEmp) {
+      resolvedWaiterId = assignedEmp.id;
+      resolvedWaiterName = assignedEmp.name;
+    }
+  }
+
+  if (!resolvedWaiterId) {
+    const activeWaiters = employees.filter(e => 
+      e.hotelId === hotelId && 
+      e.branchId === (branchId || "b-ktm") && 
+      e.role === "Waiter" && 
+      e.attendance === "Present"
+    );
+
+    if (activeWaiters.length > 0) {
+      let minCount = Infinity;
+      let selectedWaiter = activeWaiters[0];
+
+      activeWaiters.forEach(waiter => {
+        const pendingCount = serviceCalls.filter(sc => sc.status === "Pending" && sc.assignedWaiterId === waiter.id).length;
+        if (pendingCount < minCount) {
+          minCount = pendingCount;
+          selectedWaiter = waiter;
+        }
+      });
+
+      resolvedWaiterId = selectedWaiter.id;
+      resolvedWaiterName = selectedWaiter.name;
+    }
+  }
+
   const newCall: ServiceCall = {
     id: `sc-${Date.now()}`,
     hotelId,
@@ -889,7 +1313,9 @@ app.post("/api/service-calls", (req, res) => {
     tableNumber,
     type,
     status: "Pending",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    assignedWaiterId: resolvedWaiterId,
+    assignedWaiterName: resolvedWaiterName
   };
 
   serviceCalls.push(newCall);
@@ -898,11 +1324,13 @@ app.post("/api/service-calls", (req, res) => {
 
 app.put("/api/service-calls/:id", (req, res) => {
   const { id } = req.params;
-  const { status } = req.body;
+  const { status, assignedWaiterId, assignedWaiterName } = req.body;
   const idx = serviceCalls.findIndex(sc => sc.id === id);
   if (idx === -1) return res.status(404).json({ error: "Service call not found" });
 
-  if (status) serviceCalls[idx].status = status;
+  if (status !== undefined) serviceCalls[idx].status = status;
+  if (assignedWaiterId !== undefined) serviceCalls[idx].assignedWaiterId = assignedWaiterId;
+  if (assignedWaiterName !== undefined) serviceCalls[idx].assignedWaiterName = assignedWaiterName;
   res.json(serviceCalls[idx]);
 });
 
@@ -933,10 +1361,31 @@ app.get("/api/employees", (req, res) => {
 });
 
 app.post("/api/employees", (req, res) => {
-  const { hotelId, name, role, branchId, attendance, schedule } = req.body;
+  const { hotelId, name, role, branchId, attendance, schedule, weeklyShifts, hourlyRate } = req.body;
   if (!hotelId || !name || !role) {
     return res.status(400).json({ error: "Missing required employee details." });
   }
+
+  // Set default shifts
+  const defaultShifts = weeklyShifts || {
+    Monday: schedule || "09:00 - 18:00",
+    Tuesday: schedule || "09:00 - 18:00",
+    Wednesday: schedule || "09:00 - 18:00",
+    Thursday: schedule || "09:00 - 18:00",
+    Friday: schedule || "09:00 - 18:00",
+    Saturday: "Off",
+    Sunday: "Off"
+  };
+
+  // Default hourly rates by role
+  let defaultRate = 200;
+  if (role === "Manager") defaultRate = 400;
+  else if (role === "Cashier" || role === "Receptionist") defaultRate = 250;
+  else if (role === "Kitchen Staff") defaultRate = 220;
+  else if (role === "Housekeeping") defaultRate = 180;
+
+  const resolvedHourlyRate = hourlyRate !== undefined ? Number(hourlyRate) : defaultRate;
+
   const newEmp: Employee = {
     id: `e-${Date.now()}`,
     hotelId,
@@ -944,22 +1393,56 @@ app.post("/api/employees", (req, res) => {
     role,
     branchId: branchId || "b-ktm",
     attendance: attendance || "Present",
-    schedule: schedule || "09:00 - 18:00"
+    schedule: schedule || "09:00 - 18:00",
+    weeklyShifts: defaultShifts,
+    hourlyRate: resolvedHourlyRate
   };
   employees.push(newEmp);
+
+  // Trigger Shift Start notification on registration if Present
+  if (newEmp.attendance === "Present") {
+    staffNotifications.push({
+      id: `sn-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      hotelId: newEmp.hotelId,
+      employeeId: newEmp.id,
+      message: `Your shift has started! Active schedule: ${newEmp.schedule || "09:00 - 18:00"}.`,
+      type: "shift_start",
+      timestamp: new Date().toISOString(),
+      read: false
+    });
+  }
+
   res.status(201).json(newEmp);
 });
 
 app.put("/api/employees/:id", (req, res) => {
   const { id } = req.params;
-  const { name, role, attendance, schedule } = req.body;
+  const { name, role, attendance, schedule, weeklyShifts, hourlyRate } = req.body;
   const idx = employees.findIndex(e => e.id === id);
   if (idx === -1) return res.status(404).json({ error: "Employee not found." });
 
   if (name !== undefined) employees[idx].name = name;
   if (role !== undefined) employees[idx].role = role;
-  if (attendance !== undefined) employees[idx].attendance = attendance;
+  if (attendance !== undefined) {
+    const oldAttendance = employees[idx].attendance;
+    employees[idx].attendance = attendance;
+    
+    // Shift Start trigger when transitioning to Present
+    if (attendance === "Present" && oldAttendance !== "Present") {
+      staffNotifications.push({
+        id: `sn-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        hotelId: employees[idx].hotelId,
+        employeeId: id,
+        message: `Your shift has started! Attendance updated to Present. Active schedule: ${employees[idx].schedule || "09:00 - 18:00"}.`,
+        type: "shift_start",
+        timestamp: new Date().toISOString(),
+        read: false
+      });
+    }
+  }
   if (schedule !== undefined) employees[idx].schedule = schedule;
+  if (weeklyShifts !== undefined) employees[idx].weeklyShifts = weeklyShifts;
+  if (hourlyRate !== undefined) employees[idx].hourlyRate = Number(hourlyRate);
 
   res.json(employees[idx]);
 });
@@ -970,6 +1453,36 @@ app.delete("/api/employees/:id", (req, res) => {
   if (idx === -1) return res.status(404).json({ error: "Employee not found." });
   const deleted = employees.splice(idx, 1);
   res.json(deleted[0]);
+});
+
+// --- STAFF NOTIFICATION ENDPOINTS ---
+app.get("/api/staff-notifications", (req, res) => {
+  const { employeeId, hotelId } = req.query;
+  let filtered = staffNotifications;
+  if (hotelId) {
+    filtered = filtered.filter(n => n.hotelId === hotelId);
+  }
+  if (employeeId) {
+    filtered = filtered.filter(n => n.employeeId === employeeId);
+  }
+  res.json(filtered);
+});
+
+app.post("/api/staff-notifications/read", (req, res) => {
+  const { employeeId, notificationId } = req.body;
+  if (notificationId) {
+    const idx = staffNotifications.findIndex(n => n.id === notificationId);
+    if (idx !== -1) {
+      staffNotifications[idx].read = true;
+    }
+  } else if (employeeId) {
+    staffNotifications.forEach(n => {
+      if (n.employeeId === employeeId) {
+        n.read = true;
+      }
+    });
+  }
+  res.json({ success: true });
 });
 
 // --- LOAD BALANCER CONTROL ENDPOINTS ---
@@ -1091,11 +1604,12 @@ const CACHE_TTL_MS = 60 * 1000; // 1-minute cache
 
 // 7. AI Guest Assistant Recommendation Endpoint
 app.post("/api/ai/recommend", async (req, res) => {
-  const { query, hotelId } = req.body;
+  const { query, hotelId, chatHistory } = req.body;
   if (!query) return res.status(400).json({ error: "Search query is required." });
 
-  // Check cache first
-  const cacheKey = `${hotelId || "h-yak-yeti"}-recommend-${query.toLowerCase().trim()}`;
+  // Check cache first (incorporate chat history count or latest query to ensure cache uniqueness)
+  const historyLen = Array.isArray(chatHistory) ? chatHistory.length : 0;
+  const cacheKey = `${hotelId || "h-yak-yeti"}-recommend-${historyLen}-${query.toLowerCase().trim()}`;
   if (aiCache[cacheKey] && (Date.now() - aiCache[cacheKey].timestamp) < CACHE_TTL_MS) {
     return res.json(aiCache[cacheKey].data);
   }
@@ -1103,6 +1617,7 @@ app.post("/api/ai/recommend", async (req, res) => {
   // Gather current menu as context
   const filteredMenu = menuItems.filter(m => m.hotelId === (hotelId || "h-yak-yeti"));
   const menuContext = filteredMenu.map(m => ({
+    id: m.id,
     name: m.name,
     category: m.category,
     price: m.price,
@@ -1115,78 +1630,94 @@ app.post("/api/ai/recommend", async (req, res) => {
 
   const systemInstruction = `You are a world-class Swiss-trained professional hospitality AI Butler. 
 The hotel currency is Nepali Rupees (NPR). 
-Analyze the guest's input query and provide a sophisticated, professional culinary recommendation strictly based on the hotel's menu list provided in the context.
+Analyze the guest's input query, taking into account any previous conversation history, and provide a sophisticated, professional culinary recommendation strictly based on the hotel's menu list provided in the context.
 Do not use emojis under any circumstances (per Swiss-style specifications).
 Respond in professional, clean, Swiss-minimal formatting with zero promotional fluff.
 Recommend 1 to 3 items that match the user's constraints (budget, spicy preference, diet, allergies, vegetarian, etc.) and explain precisely why they match.
 Suggest cross-sell/upsell combinations (e.g., matching a delicious hot Momos starter with a refreshing organic Mint Lemonade).
-If no item directly matches, suggest the closest alternative professionally.`;
+If no item directly matches, suggest the closest alternative professionally.
+
+You MUST respond with a valid JSON object matching the following TypeScript interface schema:
+{
+  "recommendation": "The sophisticated text recommendation and explanation (no emojis). Use standard formatting (line breaks are welcome in string, but keep valid JSON).",
+  "suggestedItemIds": ["string representing the ids of the recommended items from the context, e.g. ['m-1', 'm-7']"]
+}
+Return ONLY the raw JSON. Do not wrap it in markdown code blocks like \`\`\`json.`;
 
   const prompt = `GUEST QUERY: "${query}"
 HOTEL MENU CONTEXT:
 ${JSON.stringify(menuContext, null, 2)}`;
 
-  const getSimulatedRecommendation = (query: string) => {
-    let simText = `Offline/AI-Simulated recommendation based on Swiss standard:
+  const getSimulatedRecommendation = (q: string) => {
+    let recommendation = `Offline/AI-Simulated recommendation based on Swiss standard:\n\nMatched Selection:\n- Classic Steamed Buff Momos (NPR 380)\n  A perfect option. Features buffalo meat wrapper flavored with spicy ginger, garlic and sesame. Matches spicy craving.\n- Organic Honey Latte (NPR 280)\n  Cross-sell Suggestion: The smooth dairy sweetness pairs exceptionally with the spicy momo chutney.\n\nAllergen Warning:\n- The chicken momos contain peanuts in the sauce. The Steamed Buff Momos are peanut-free.`;
+    let suggestedItemIds = ["m-1", "m-7"];
 
-Matched Selection:
-- Classic Steamed Buff Momos (NPR 380)
-  A perfect option. Features buffalo meat wrapper flavored with spicy ginger, garlic and sesame. Matches spicy craving.
-- Organic Honey Latte (NPR 280)
-  Cross-sell Suggestion: The smooth dairy sweetness pairs exceptionally with the spicy momo chutney.
-
-Allergen Warning:
-- The chicken momos contain peanuts in the sauce. The Steamed Buff Momos are peanut-free.`;
-
-    if (query.toLowerCase().includes("vegetarian") || query.toLowerCase().includes("veg")) {
-      simText = `Offline/AI-Simulated recommendation based on Swiss standard:
-
-Matched Selection:
-- Sadeko Gundruk & Bhatmas (NPR 240)
-  100% Vegetarian starter. Traditional dried fermented greens combined with crispy toasted soybeans tossed in organic mustard oil. High protein, vegan, and nut-free.
-- Fresh Himalayan Mint Lemonade (NPR 190)
-  A refreshing zero-dairy cold-pressed drink to cleanse the palate.`;
-    } else if (query.toLowerCase().includes("peanut") || query.toLowerCase().includes("allergy")) {
-      simText = `Offline/AI-Simulated recommendation based on Swiss standard:
-
-Allergen-Safe Matched Selection:
-- Classic Steamed Buff Momos (NPR 380)
-  Peanut-free preparation. Handcrafted wheat dumplings with buffalo seasoned filling. Safe for your peanut allergy.
-- Himalayan Thakali Thali (Mutton) (NPR 780)
-  Rich, nut-free traditional Nepali platter. Cooked with organic rice, lentils, ghee, and roasted mutton.`;
-    } else if (query.toLowerCase().includes("800") || query.toLowerCase().includes("budget")) {
-      simText = `Offline/AI-Simulated recommendation based on Swiss standard:
-
-Budget Optimized Platter (Total NPR 620 / Under NPR 800):
-- Kothey Pan-Fried Chicken Momos (NPR 420)
-  Crispy bottom pan-seared dumplings. High protein.
-- Organic Honey Latte (NPR 280)
-  Hot organic espresso beverage to round off your meal.`;
+    if (q.toLowerCase().includes("vegetarian") || q.toLowerCase().includes("veg")) {
+      recommendation = `Offline/AI-Simulated recommendation based on Swiss standard:\n\nMatched Selection:\n- Sadeko Gundruk & Bhatmas (NPR 240)\n  100% Vegetarian starter. Traditional dried fermented greens combined with crispy toasted soybeans tossed in organic mustard oil. High protein, vegan, and nut-free.\n- Fresh Himalayan Mint Lemonade (NPR 190)\n  A refreshing zero-dairy cold-pressed drink to cleanse the palate.`;
+      suggestedItemIds = ["m-5", "m-8"];
+    } else if (q.toLowerCase().includes("peanut") || q.toLowerCase().includes("allergy")) {
+      recommendation = `Offline/AI-Simulated recommendation based on Swiss standard:\n\nAllergen-Safe Matched Selection:\n- Classic Steamed Buff Momos (NPR 380)\n  Peanut-free preparation. Handcrafted wheat dumplings with buffalo seasoned filling. Safe for your peanut allergy.\n- Himalayan Thakali Thali (Mutton) (NPR 780)\n  Rich, nut-free traditional Nepali platter. Cooked with organic rice, lentils, ghee, and roasted mutton.`;
+      suggestedItemIds = ["m-1", "m-3"];
+    } else if (q.toLowerCase().includes("800") || q.toLowerCase().includes("budget")) {
+      recommendation = `Offline/AI-Simulated recommendation based on Swiss standard:\n\nBudget Optimized Platter (Total NPR 620 / Under NPR 800):\n- Kothey Pan-Fried Chicken Momos (NPR 420)\n  Crispy bottom pan-seared dumplings. High protein.\n- Organic Honey Latte (NPR 280)\n  Hot organic espresso beverage to round off your meal.`;
+      suggestedItemIds = ["m-2", "m-7"];
     }
-    return simText;
+    return { recommendation, suggestedItemIds };
   };
 
-  let recommendationText = "";
+  let responseData: any = null;
   if (ai) {
     try {
+      let contents: any[] = [];
+      if (Array.isArray(chatHistory) && chatHistory.length > 0) {
+        contents = chatHistory.map((h: any) => ({
+          role: h.sender === "user" ? "user" : "model",
+          parts: [{ text: h.text }]
+        }));
+      }
+      contents.push({
+        role: "user",
+        parts: [{ text: prompt }]
+      });
+
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash",
-        contents: prompt,
+        contents: contents,
         config: {
           systemInstruction,
           temperature: 0.3,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              recommendation: { type: Type.STRING },
+              suggestedItemIds: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+              }
+            },
+            required: ["recommendation", "suggestedItemIds"]
+          }
         }
       });
-      recommendationText = response.text || "";
+      
+      const rawText = response.text || "";
+      let cleaned = rawText.trim();
+      if (cleaned.includes("```json")) {
+        cleaned = cleaned.split("```json")[1].split("```")[0].trim();
+      } else if (cleaned.includes("```")) {
+        cleaned = cleaned.split("```")[1].split("```")[0].trim();
+      }
+      
+      responseData = JSON.parse(cleaned);
     } catch (err: any) {
-      console.log("AI system utilizing Swiss local simulation engine.");
-      recommendationText = getSimulatedRecommendation(query);
+      console.log("AI system utilizing Swiss local simulation engine.", err);
+      responseData = getSimulatedRecommendation(query);
     }
   } else {
-    recommendationText = getSimulatedRecommendation(query);
+    responseData = getSimulatedRecommendation(query);
   }
 
-  const responseData = { recommendation: recommendationText };
   aiCache[cacheKey] = { timestamp: Date.now(), data: responseData };
   res.json(responseData);
 });

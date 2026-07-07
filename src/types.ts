@@ -18,6 +18,9 @@ export interface Branch {
   id: string;
   name: string;
   location: string;
+  contactPhone?: string;
+  operatingHours?: string;
+  status?: "Approved" | "PendingApproval";
 }
 
 export interface Table {
@@ -30,6 +33,8 @@ export interface Table {
   status: "Vacant" | "Occupied" | "Reserved";
   reservedName?: string;
   reservedTime?: string;
+  assignedWaiterId?: string;
+  assignedWaiterName?: string;
 }
 
 export interface MenuItem {
@@ -50,6 +55,7 @@ export interface MenuItem {
   prepTime: string;
   isAvailable: boolean;
   isPopular: boolean;
+  branchAvailability?: string[];
 }
 
 export interface OrderItem {
@@ -98,6 +104,16 @@ export interface Employee {
   branchId: string;
   attendance: "Present" | "Absent" | "On Leave";
   schedule: string;
+  weeklyShifts?: {
+    Monday?: string;
+    Tuesday?: string;
+    Wednesday?: string;
+    Thursday?: string;
+    Friday?: string;
+    Saturday?: string;
+    Sunday?: string;
+  };
+  hourlyRate?: number;
 }
 
 export interface Room {
@@ -120,4 +136,16 @@ export interface ServiceCall {
   type: "Call Waiter" | "Request Bill" | "Water Refill";
   status: "Pending" | "Resolved";
   timestamp: string;
+  assignedWaiterId?: string;
+  assignedWaiterName?: string;
+}
+
+export interface StaffNotification {
+  id: string;
+  hotelId: string;
+  employeeId: string;
+  message: string;
+  type: "shift_start" | "table_assignment" | "order_assignment";
+  timestamp: string;
+  read: boolean;
 }
