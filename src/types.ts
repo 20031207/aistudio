@@ -94,6 +94,7 @@ export interface StockItem {
   minLevel: number;
   expiryDate: string;
   supplier: string;
+  branchId?: string;
 }
 
 export interface Employee {

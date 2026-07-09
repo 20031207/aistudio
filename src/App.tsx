@@ -12,6 +12,7 @@ import {
   Sparkles, 
   Check, 
   AlertTriangle, 
+  Edit3,
   Plus, 
   QrCode, 
   ShoppingBag, 
@@ -82,6 +83,21 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginLoading, setLoginLoading] = useState<boolean>(false);
 
+  // ROLE LOGIN STATES
+  const [cookLoggedIn, setCookLoggedIn] = useState<boolean>(() => {
+    return localStorage.getItem("cookLoggedIn") === "true";
+  });
+  const [waiterCashierLoggedIn, setWaiterCashierLoggedIn] = useState<boolean>(() => {
+    return localStorage.getItem("waiterCashierLoggedIn") === "true";
+  });
+  const [cookLoginUsername, setCookLoginUsername] = useState<string>("");
+  const [cookLoginPassword, setCookLoginPassword] = useState<string>("");
+  const [cookLoginError, setCookLoginError] = useState<string | null>(null);
+
+  const [staffLoginUsername, setStaffLoginUsername] = useState<string>("");
+  const [staffLoginPassword, setStaffLoginPassword] = useState<string>("");
+  const [staffLoginError, setStaffLoginError] = useState<string | null>(null);
+
   // SYSTEM DATA STATES (Synchronized with Server API)
   const [hotels, setHotels] = useState<Hotel[]>([]);
   const [tables, setTables] = useState<Table[]>([]);
@@ -120,6 +136,23 @@ export default function App() {
   const [reservingTable, setReservingTable] = useState<Table | null>(null);
   const [reservationName, setReservationName] = useState<string>("");
   const [reservationTime, setReservationTime] = useState<string>("");
+
+  // INVENTORY INTERACTION STATES
+  const [inventorySearchQuery, setInventorySearchQuery] = useState<string>("");
+  const [inventoryStatusFilter, setInventoryStatusFilter] = useState<string>("all");
+  const [inventoryBranchFilter, setInventoryBranchFilter] = useState<string>("all");
+  const [inventorySortBy, setInventorySortBy] = useState<string>("name");
+  const [showAddStockModal, setShowAddStockModal] = useState<boolean>(false);
+  const [editingStockItem, setEditingStockItem] = useState<StockItem | null>(null);
+  
+  // Stock Form Fields
+  const [stockFormName, setStockFormName] = useState<string>("");
+  const [stockFormBranchId, setStockFormBranchId] = useState<string>("");
+  const [stockFormQuantity, setStockFormQuantity] = useState<number>(0);
+  const [stockFormUnit, setStockFormUnit] = useState<string>("kg");
+  const [stockFormMinLevel, setStockFormMinLevel] = useState<number>(5);
+  const [stockFormExpiryDate, setStockFormExpiryDate] = useState<string>("");
+  const [stockFormSupplier, setStockFormSupplier] = useState<string>("");
 
   // STAFF WORKSPACE & NOTIFICATIONS STATE
   const [selectedStaffId, setSelectedStaffId] = useState<string | null>(() => {
@@ -171,6 +204,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("adminActiveTab", adminActiveTab);
   }, [adminActiveTab]);
+
+  useEffect(() => {
+    localStorage.setItem("cookLoggedIn", String(cookLoggedIn));
+  }, [cookLoggedIn]);
+
+  useEffect(() => {
+    localStorage.setItem("waiterCashierLoggedIn", String(waiterCashierLoggedIn));
+  }, [waiterCashierLoggedIn]);
 
   // BRANCH MANAGEMENT STATE
   const [newBranchForm, setNewBranchForm] = useState({ 
@@ -943,6 +984,135 @@ export default function App() {
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const handleCreateStockItem = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      setSyncStatus("Syncing...");
+      const response = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hotelId: currentHotelId,
+          name: stockFormName,
+          quantity: Number(stockFormQuantity),
+          unit: stockFormUnit,
+          minLevel: Number(stockFormMinLevel),
+          expiryDate: stockFormExpiryDate,
+          supplier: stockFormSupplier,
+          branchId: stockFormBranchId || undefined
+        })
+      });
+      if (response.ok) {
+        triggerNotification(`New stock item "${stockFormName}" has been successfully cataloged.`);
+        setShowAddStockModal(false);
+        // Reset form
+        setStockFormName("");
+        setStockFormBranchId("");
+        setStockFormQuantity(0);
+        setStockFormUnit("kg");
+        setStockFormMinLevel(5);
+        setStockFormExpiryDate("");
+        setStockFormSupplier("");
+        await fetchData();
+      } else {
+        const err = await response.json().catch(() => ({}));
+        triggerNotification(err.error || "Failed to create stock item.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error cataloging item.");
+    } finally {
+      setSyncStatus("Synchronized");
+    }
+  };
+
+  const handleUpdateStockItem = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editingStockItem) return;
+    try {
+      setSyncStatus("Syncing...");
+      const response = await fetch(`/api/inventory/${editingStockItem.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: stockFormName,
+          quantity: Number(stockFormQuantity),
+          unit: stockFormUnit,
+          minLevel: Number(stockFormMinLevel),
+          expiryDate: stockFormExpiryDate,
+          supplier: stockFormSupplier,
+          branchId: stockFormBranchId || undefined
+        })
+      });
+      if (response.ok) {
+        triggerNotification(`Stock item "${stockFormName}" updated successfully.`);
+        setEditingStockItem(null);
+        // Reset form
+        setStockFormName("");
+        setStockFormBranchId("");
+        setStockFormQuantity(0);
+        setStockFormUnit("kg");
+        setStockFormMinLevel(5);
+        setStockFormExpiryDate("");
+        setStockFormSupplier("");
+        await fetchData();
+      } else {
+        const err = await response.json().catch(() => ({}));
+        triggerNotification(err.error || "Failed to update stock item.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error updating item.");
+    } finally {
+      setSyncStatus("Synchronized");
+    }
+  };
+
+  const handleDeleteStockItem = async (stockId: string, name: string) => {
+    if (!window.confirm(`Are you sure you want to permanently delete "${name}" from the inventory?`)) return;
+    try {
+      setSyncStatus("Deleting...");
+      const response = await fetch(`/api/inventory/${stockId}`, {
+        method: "DELETE"
+      });
+      if (response.ok) {
+        triggerNotification(`"${name}" removed from raw materials catalog.`);
+        await fetchData();
+      } else {
+        triggerNotification("Failed to delete inventory item.");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Network error removing inventory item.");
+    } finally {
+      setSyncStatus("Synchronized");
+    }
+  };
+
+  const handleOpenAddStockModal = () => {
+    setEditingStockItem(null);
+    setStockFormName("");
+    setStockFormBranchId(currentBranchId || "");
+    setStockFormQuantity(0);
+    setStockFormUnit("kg");
+    setStockFormMinLevel(5);
+    setStockFormExpiryDate("");
+    setStockFormSupplier("");
+    setShowAddStockModal(true);
+  };
+
+  const handleOpenEditStockModal = (item: StockItem) => {
+    setEditingStockItem(item);
+    setStockFormName(item.name);
+    setStockFormBranchId(item.branchId || "");
+    setStockFormQuantity(item.quantity);
+    setStockFormUnit(item.unit);
+    setStockFormMinLevel(item.minLevel);
+    setStockFormExpiryDate(item.expiryDate || "");
+    setStockFormSupplier(item.supplier || "");
+    setShowAddStockModal(false);
   };
 
   const handleServiceCall = async (type: "Call Waiter" | "Request Bill" | "Water Refill") => {
@@ -3923,24 +4093,215 @@ export default function App() {
                 )}
 
                 {/* PRODUCTS CATALOG & INVENTORY */}
-                {adminActiveTab === "inventory" && hasModule("Inventory") && (
-                  <div className="bg-white border-2 border-swiss-dark p-6 animate-fadeIn">
-                      <div className="flex justify-between items-center mb-4 pb-2 border-b border-swiss-dark">
-                        <h3 className="text-lg font-bold uppercase tracking-tight">Kitchen Raw Material Inventory</h3>
-                        <button 
-                          onClick={handleFetchRestockPrediction}
-                          className="text-xs bg-swiss-dark hover:bg-terracotta text-white px-2 py-1 uppercase font-mono cursor-pointer"
-                        >
-                          AI Restock Predictor
-                        </button>
+                {adminActiveTab === "inventory" && hasModule("Inventory") && (() => {
+                  const hotelStockItems = stockItems.filter(s => s.hotelId === currentHotelId);
+                  const activeHotelBranches = activeHotel?.branches || [];
+
+                  // Calculate stats
+                  const totalSKUs = hotelStockItems.length;
+                  const lowStockCount = hotelStockItems.filter(s => s.quantity <= s.minLevel).length;
+                  const outOfStockCount = hotelStockItems.filter(s => s.quantity === 0).length;
+                  const expiredCount = hotelStockItems.filter(s => {
+                    if (!s.expiryDate) return false;
+                    return new Date(s.expiryDate).getTime() < Date.now();
+                  }).length;
+
+                  // Filtered and sorted list
+                  const filteredStockItems = hotelStockItems.filter(s => {
+                    const matchesSearch = s.name.toLowerCase().includes(inventorySearchQuery.toLowerCase()) || 
+                                          s.supplier.toLowerCase().includes(inventorySearchQuery.toLowerCase());
+                    const matchesBranch = inventoryBranchFilter === "all" || s.branchId === inventoryBranchFilter;
+                    
+                    let matchesStatus = true;
+                    if (inventoryStatusFilter === "low") {
+                      matchesStatus = s.quantity <= s.minLevel;
+                    } else if (inventoryStatusFilter === "out") {
+                      matchesStatus = s.quantity === 0;
+                    } else if (inventoryStatusFilter === "expired") {
+                      if (!s.expiryDate) matchesStatus = false;
+                      else matchesStatus = new Date(s.expiryDate).getTime() < Date.now();
+                    }
+                    
+                    return matchesSearch && matchesBranch && matchesStatus;
+                  }).sort((a, b) => {
+                    if (inventorySortBy === "name") {
+                      return a.name.localeCompare(b.name);
+                    } else if (inventorySortBy === "name-desc") {
+                      return b.name.localeCompare(a.name);
+                    } else if (inventorySortBy === "qty-low") {
+                      return a.quantity - b.quantity;
+                    } else if (inventorySortBy === "qty-high") {
+                      return b.quantity - a.quantity;
+                    } else if (inventorySortBy === "expiry") {
+                      if (!a.expiryDate) return 1;
+                      if (!b.expiryDate) return -1;
+                      return new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime();
+                    } else if (inventorySortBy === "alert") {
+                      const marginA = a.quantity - a.minLevel;
+                      const marginB = b.quantity - b.minLevel;
+                      return marginA - marginB;
+                    }
+                    return 0;
+                  });
+
+                  return (
+                    <div className="bg-white border-2 border-swiss-dark p-6 animate-fadeIn text-swiss-dark font-sans">
+                      {/* HEADER SECTION */}
+                      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 pb-4 border-b-2 border-swiss-dark">
+                        <div>
+                          <h3 className="text-xl font-black uppercase tracking-tight text-swiss-dark flex items-center gap-2">
+                            <span>📦 Raw Materials & Kitchen Inventory</span>
+                          </h3>
+                          <p className="text-xs text-swiss-dark/60 font-mono mt-0.5">Hotel-wide and branch-specific ingredient logistics ledger.</p>
+                        </div>
+                        <div className="flex items-center gap-2 w-full md:w-auto">
+                          <button 
+                            onClick={handleFetchRestockPrediction}
+                            disabled={restockLoading}
+                            className="flex-1 md:flex-none text-xs bg-swiss-dark hover:bg-terracotta disabled:opacity-50 text-white px-3 py-2 uppercase font-mono font-bold cursor-pointer transition-all border border-swiss-dark"
+                          >
+                            {restockLoading ? "Analyzing Ledgers..." : "🔮 Run AI Restock Prediction"}
+                          </button>
+                          <button 
+                            onClick={handleOpenAddStockModal}
+                            className="flex-1 md:flex-none text-xs bg-terracotta hover:bg-swiss-dark text-white px-3 py-2 uppercase font-mono font-bold cursor-pointer transition-all border border-swiss-dark flex items-center justify-center gap-1.5"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> Catalog New Material
+                          </button>
+                        </div>
                       </div>
 
+                      {/* STATS OVERVIEW CARDS */}
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                        <div 
+                          onClick={() => {
+                            setInventoryStatusFilter("all");
+                          }}
+                          className={`p-4 border border-swiss-dark cursor-pointer transition-all ${
+                            inventoryStatusFilter === "all" ? "bg-swiss-light border-2" : "bg-white hover:bg-swiss-light/30"
+                          }`}
+                        >
+                          <span className="text-[10px] uppercase font-bold tracking-wider text-swiss-dark/50 block font-mono">Total Tracked SKUs</span>
+                          <span className="text-2xl font-black font-mono block mt-1">{totalSKUs}</span>
+                          <span className="text-[9px] font-mono text-swiss-dark/40 mt-1 block">Active across all lists</span>
+                        </div>
+
+                        <div 
+                          onClick={() => {
+                            setInventoryStatusFilter(inventoryStatusFilter === "low" ? "all" : "low");
+                          }}
+                          className={`p-4 border border-swiss-dark cursor-pointer transition-all ${
+                            inventoryStatusFilter === "low" ? "bg-rose-50 border-rose-500 border-2" : "bg-white hover:bg-rose-50/10"
+                          }`}
+                        >
+                          <span className="text-[10px] uppercase font-bold tracking-wider text-rose-800/60 block font-mono">Low Stock Alerts</span>
+                          <span className={`text-2xl font-black font-mono block mt-1 ${lowStockCount > 0 ? "text-rose-600 animate-pulse" : "text-swiss-dark"}`}>
+                            {lowStockCount}
+                          </span>
+                          <span className="text-[9px] font-mono text-swiss-dark/40 mt-1 block">Items below thresholds</span>
+                        </div>
+
+                        <div 
+                          onClick={() => {
+                            setInventoryStatusFilter(inventoryStatusFilter === "out" ? "all" : "out");
+                          }}
+                          className={`p-4 border border-swiss-dark cursor-pointer transition-all ${
+                            inventoryStatusFilter === "out" ? "bg-red-50 border-red-600 border-2" : "bg-white hover:bg-red-50/10"
+                          }`}
+                        >
+                          <span className="text-[10px] uppercase font-bold tracking-wider text-red-800/60 block font-mono">Out of Stock</span>
+                          <span className={`text-2xl font-black font-mono block mt-1 ${outOfStockCount > 0 ? "text-red-600 font-extrabold" : "text-swiss-dark"}`}>
+                            {outOfStockCount}
+                          </span>
+                          <span className="text-[9px] font-mono text-swiss-dark/40 mt-1 block">Depleted raw materials</span>
+                        </div>
+
+                        <div 
+                          onClick={() => {
+                            setInventoryStatusFilter(inventoryStatusFilter === "expired" ? "all" : "expired");
+                          }}
+                          className={`p-4 border border-swiss-dark cursor-pointer transition-all ${
+                            inventoryStatusFilter === "expired" ? "bg-amber-50 border-amber-500 border-2" : "bg-white hover:bg-amber-50/10"
+                          }`}
+                        >
+                          <span className="text-[10px] uppercase font-bold tracking-wider text-amber-800/60 block font-mono">Spoilage & Expiry Risk</span>
+                          <span className={`text-2xl font-black font-mono block mt-1 ${expiredCount > 0 ? "text-amber-600" : "text-swiss-dark"}`}>
+                            {expiredCount}
+                          </span>
+                          <span className="text-[9px] font-mono text-swiss-dark/40 mt-1 block">Expired raw materials</span>
+                        </div>
+                      </div>
+
+                      {/* SEARCH, SORT & BRANCH CONTROLS BAR */}
+                      <div className="bg-swiss-light border border-swiss-dark p-4 mb-6 grid grid-cols-1 md:grid-cols-4 gap-4 font-mono text-xs">
+                        <div className="relative">
+                          <label className="block text-[10px] font-bold uppercase mb-1 tracking-wider text-swiss-dark/60">Search Ingredient / Supplier</label>
+                          <div className="relative">
+                            <input 
+                              type="text"
+                              value={inventorySearchQuery}
+                              onChange={(e) => setInventorySearchQuery(e.target.value)}
+                              placeholder="Search e.g. Buffalo, Coffee..."
+                              className="w-full bg-white border border-swiss-dark pl-8 pr-2 py-2 text-swiss-dark focus:outline-none"
+                            />
+                            <Search className="w-3.5 h-3.5 absolute left-2.5 top-3 text-swiss-dark/40" />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase mb-1 tracking-wider text-swiss-dark/60">Branch Logistics Filter</label>
+                          <select
+                            value={inventoryBranchFilter}
+                            onChange={(e) => setInventoryBranchFilter(e.target.value)}
+                            className="w-full bg-white border border-swiss-dark p-2 text-swiss-dark font-bold cursor-pointer"
+                          >
+                            <option value="all">🌐 All Branches</option>
+                            {activeHotelBranches.map((b: any) => (
+                              <option key={b.id} value={b.id}>
+                                📍 {b.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase mb-1 tracking-wider text-swiss-dark/60">Stock Status Filter</label>
+                          <select
+                            value={inventoryStatusFilter}
+                            onChange={(e) => setInventoryStatusFilter(e.target.value)}
+                            className="w-full bg-white border border-swiss-dark p-2 text-swiss-dark font-bold cursor-pointer"
+                          >
+                            <option value="all">📋 Show All Ingredients</option>
+                            <option value="low">⚠️ Low Stock Warns</option>
+                            <option value="out">🛑 Out of Stock Only</option>
+                            <option value="expired">⌛ Expired Items Only</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase mb-1 tracking-wider text-swiss-dark/60">Sort Inventory Ledger</label>
+                          <select
+                            value={inventorySortBy}
+                            onChange={(e) => setInventorySortBy(e.target.value)}
+                            className="w-full bg-white border border-swiss-dark p-2 text-swiss-dark font-bold cursor-pointer"
+                          >
+                            <option value="name">🔤 Name (A - Z)</option>
+                            <option value="name-desc">🔤 Name (Z - A)</option>
+                            <option value="qty-low">📉 Stock Quantity (Low to High)</option>
+                            <option value="qty-high">📈 Stock Quantity (High to Low)</option>
+                            <option value="expiry">⏳ Expiration (Soonest First)</option>
+                            <option value="alert">🚨 Urgency Margin</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* AI PRESTOCKED LOGISTICS ADVISORY REPORT */}
                       {restockPrediction && (
                         (() => {
                           const parsed = parseRestockPrediction(restockPrediction);
                           if (parsed) {
                             return (
-                              <div className="bg-sand-light border border-swiss-dark p-4 mb-4 font-mono text-[10px] text-swiss-dark">
+                              <div className="bg-sand-light border border-swiss-dark p-4 mb-6 font-mono text-[10px] text-swiss-dark">
                                 <span className="font-bold text-terracotta uppercase block mb-2 tracking-wider">
                                   📊 {parsed.reportTitle || "AI Logistics Prediction Report"}
                                 </span>
@@ -3978,7 +4339,7 @@ export default function App() {
                             );
                           }
                           return (
-                            <div className="bg-sand-light border border-swiss-dark p-3 mb-4 font-mono text-[10px] text-swiss-dark leading-relaxed">
+                            <div className="bg-sand-light border border-swiss-dark p-3 mb-6 font-mono text-[10px] text-swiss-dark leading-relaxed">
                               <span className="font-bold text-terracotta uppercase block mb-1">AI Logistics Prediction Report:</span>
                               {restockPrediction}
                             </div>
@@ -3986,42 +4347,284 @@ export default function App() {
                         })()
                       )}
 
-                      <div className="space-y-3 font-mono text-xs max-h-96 overflow-y-auto pr-1">
-                        {stockItems.filter(s => s.hotelId === currentHotelId).map(s => {
-                          const isLow = s.quantity <= s.minLevel;
-                          return (
-                            <div key={s.id} className="border border-swiss-dark p-3 flex justify-between items-center bg-swiss-light">
+                      {/* INVENTORY ITEMS GRID LIST */}
+                      {filteredStockItems.length === 0 ? (
+                        <div className="border border-dashed border-swiss-dark/30 p-12 text-center text-swiss-dark/50 bg-swiss-light/20">
+                          <span className="block text-2xl mb-2">🔍</span>
+                          <span className="font-mono text-xs uppercase font-bold">No inventory records found</span>
+                          <p className="text-[10px] mt-1 text-swiss-dark/40 max-w-sm mx-auto">Try altering your search text, branch logistics filter, or item status thresholds.</p>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {filteredStockItems.map(s => {
+                            const isLow = s.quantity <= s.minLevel;
+                            const isOutOfStock = s.quantity === 0;
+                            
+                            // Check Expiration
+                            let isExpired = false;
+                            let isExpiringSoon = false;
+                            if (s.expiryDate) {
+                              const expTime = new Date(s.expiryDate).getTime();
+                              const diffDays = Math.ceil((expTime - Date.now()) / (1000 * 60 * 60 * 24));
+                              if (diffDays < 0) {
+                                isExpired = true;
+                              } else if (diffDays <= 7) {
+                                isExpiringSoon = true;
+                              }
+                            }
+
+                            // Branch lookup
+                            const assignedBranchName = s.branchId 
+                              ? activeHotelBranches.find((b: any) => b.id === s.branchId)?.name || s.branchId 
+                              : "Universal Store";
+
+                            return (
+                              <div 
+                                key={s.id} 
+                                className={`border border-swiss-dark p-4 flex flex-col justify-between transition-all relative overflow-hidden ${
+                                  isOutOfStock ? "bg-red-50/15" : isLow ? "bg-rose-50/10" : "bg-swiss-light/40 hover:bg-swiss-light/70"
+                                }`}
+                              >
+                                {/* Warning side indicator stripe */}
+                                <div className={`absolute top-0 bottom-0 left-0 w-1 ${
+                                  isOutOfStock ? "bg-red-600" : isLow ? "bg-rose-500" : isExpired ? "bg-amber-600" : "bg-transparent"
+                                }`} />
+
+                                <div className="pl-1">
+                                  <div className="flex justify-between items-start gap-2 mb-1.5">
+                                    <span className="font-mono text-[9px] text-swiss-dark/40 uppercase tracking-widest">
+                                      #{s.id}
+                                    </span>
+                                    <div className="flex gap-1 flex-wrap justify-end">
+                                      {isOutOfStock && (
+                                        <span className="bg-red-100 text-red-800 text-[8px] px-1.5 py-0.25 font-bold border border-red-800 uppercase tracking-wider">
+                                          OUT OF STOCK
+                                        </span>
+                                      )}
+                                      {!isOutOfStock && isLow && (
+                                        <span className="bg-rose-100 text-rose-800 text-[8px] px-1.5 py-0.25 font-bold border border-rose-800 uppercase tracking-wider animate-pulse">
+                                          LOW STOCK
+                                        </span>
+                                      )}
+                                      {isExpired && (
+                                        <span className="bg-amber-100 text-amber-800 text-[8px] px-1.5 py-0.25 font-bold border border-amber-800 uppercase tracking-wider">
+                                          EXPIRED
+                                        </span>
+                                      )}
+                                      {isExpiringSoon && (
+                                        <span className="bg-orange-100 text-orange-800 text-[8px] px-1.5 py-0.25 font-bold border border-orange-800 uppercase tracking-wider">
+                                          SPOILAGE RISK
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <h4 className="font-bold text-sm text-swiss-dark mb-2 tracking-tight line-clamp-1 uppercase font-mono">
+                                    {s.name}
+                                  </h4>
+
+                                  <div className="space-y-1.5 font-mono text-[10px] text-swiss-dark/70 border-t border-swiss-dark/10 pt-2 mb-4">
+                                    <div className="flex justify-between">
+                                      <span>📍 Branch:</span>
+                                      <span className="font-bold text-swiss-dark">{assignedBranchName}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span>🏢 Supplier:</span>
+                                      <span className="font-bold text-swiss-dark/90 line-clamp-1">{s.supplier || "Direct Sourced"}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span>⌛ Expiration:</span>
+                                      <span className={`font-bold ${isExpired ? "text-red-600" : isExpiringSoon ? "text-amber-600" : "text-swiss-dark"}`}>
+                                        {s.expiryDate || "No Expiry Tracked"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span>🚨 Min Level Alert:</span>
+                                      <span className="font-bold text-swiss-dark">{s.minLevel} {s.unit}</span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* FOOTER QUANTITY CONTROLLER & ACTION BUTTONS */}
+                                <div className="border-t border-swiss-dark/20 pt-3 flex items-center justify-between gap-2 mt-auto pl-1">
+                                  {/* Multi-step increments */}
+                                  <div className="flex items-center gap-1 bg-white border border-swiss-dark p-1">
+                                    <button 
+                                      onClick={() => handleUpdateStockQuantity(s.id, Math.max(0, s.quantity - 1))}
+                                      title="Subtract 1"
+                                      className="px-1.5 py-0.5 hover:bg-swiss-light text-swiss-dark text-[9px] font-bold cursor-pointer font-mono border-r border-swiss-dark/20"
+                                    >
+                                      -1
+                                    </button>
+                                    <span className="px-2 font-mono font-bold text-xs text-swiss-dark text-center min-w-[50px] block">
+                                      {s.quantity} <span className="text-[9px] text-swiss-dark/50">{s.unit}</span>
+                                    </span>
+                                    <button 
+                                      onClick={() => handleUpdateStockQuantity(s.id, s.quantity + 1)}
+                                      title="Add 1"
+                                      className="px-1.5 py-0.5 hover:bg-swiss-light text-swiss-dark text-[9px] font-bold cursor-pointer font-mono border-l border-swiss-dark/20"
+                                    >
+                                      +1
+                                    </button>
+                                  </div>
+
+                                  {/* Administrative Operations */}
+                                  <div className="flex items-center gap-1.5">
+                                    <button 
+                                      onClick={() => handleOpenEditStockModal(s)}
+                                      title="Edit Stock Item"
+                                      className="p-1.5 bg-white border border-swiss-dark hover:bg-swiss-light text-swiss-dark cursor-pointer transition-colors"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button 
+                                      onClick={() => handleDeleteStockItem(s.id, s.name)}
+                                      title="Delete Stock Item"
+                                      className="p-1.5 bg-white border border-swiss-dark hover:bg-rose-50 text-rose-600 cursor-pointer transition-colors"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* STOCK REGISTRATION / UPDATE MODAL OVERLAY */}
+                      {(showAddStockModal || editingStockItem) && (
+                        <div className="fixed inset-0 bg-swiss-dark/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fadeIn font-mono text-xs text-swiss-dark">
+                          <div className="bg-white border-4 border-swiss-dark max-w-md w-full p-6 shadow-2xl relative">
+                            <button 
+                              onClick={() => {
+                                setShowAddStockModal(false);
+                                setEditingStockItem(null);
+                              }}
+                              className="absolute top-4 right-4 text-swiss-dark hover:text-terracotta cursor-pointer font-bold border-none bg-transparent"
+                            >
+                              <X className="w-5 h-5" />
+                            </button>
+
+                            <h3 className="text-sm font-black uppercase tracking-wider text-swiss-dark mb-4 pb-1.5 border-b-2 border-swiss-dark flex items-center gap-1.5">
+                              <span>{editingStockItem ? "📝 Edit Ledger Item" : "➕ Catalog New Ingredient"}</span>
+                            </h3>
+
+                            <form onSubmit={editingStockItem ? handleUpdateStockItem : handleCreateStockItem} className="space-y-4">
                               <div>
-                                <div className="font-bold flex items-center gap-1.5">
-                                  {s.name}
-                                  {isLow && <span className="bg-rose-100 text-rose-800 text-[8px] px-1 font-bold border border-rose-800">LOW STOCK</span>}
-                                </div>
-                                <div className="text-[10px] text-swiss-dark/60 mt-1">Supplier: {s.supplier}</div>
-                                <div className="text-[10px] text-swiss-dark/60">Expiry: {s.expiryDate}</div>
+                                <label className="block font-bold uppercase text-[9px] tracking-wider mb-1 text-swiss-dark/60">Item Name *</label>
+                                <input 
+                                  type="text"
+                                  required
+                                  value={stockFormName}
+                                  onChange={(e) => setStockFormName(e.target.value)}
+                                  placeholder="e.g. Pure Yak Ghee"
+                                  className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark font-sans focus:outline-none focus:border-terracotta font-bold text-xs"
+                                />
                               </div>
-                              <div className="text-right">
-                                <span className="font-bold text-sm block">{s.quantity} {s.unit}</span>
-                                <div className="flex gap-1 mt-1 justify-end">
-                                  <button 
-                                    onClick={() => handleUpdateStockQuantity(s.id, s.quantity + 5)}
-                                    className="px-1.5 py-0.5 bg-swiss-dark text-white text-[10px] cursor-pointer"
-                                  >
-                                    +5
-                                  </button>
-                                  <button 
-                                    onClick={() => handleUpdateStockQuantity(s.id, Math.max(0, s.quantity - 5))}
-                                    className="px-1.5 py-0.5 bg-swiss-dark text-white text-[10px] cursor-pointer"
-                                  >
-                                    -5
-                                  </button>
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label className="block font-bold uppercase text-[9px] tracking-wider mb-1 text-swiss-dark/60">Quantity *</label>
+                                  <input 
+                                    type="number"
+                                    required
+                                    min="0"
+                                    step="any"
+                                    value={stockFormQuantity}
+                                    onChange={(e) => setStockFormQuantity(Number(e.target.value))}
+                                    className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block font-bold uppercase text-[9px] tracking-wider mb-1 text-swiss-dark/60">Unit *</label>
+                                  <input 
+                                    type="text"
+                                    required
+                                    value={stockFormUnit}
+                                    onChange={(e) => setStockFormUnit(e.target.value)}
+                                    placeholder="e.g. kg, Litre, pcs"
+                                    className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none text-xs"
+                                  />
                                 </div>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label className="block font-bold uppercase text-[9px] tracking-wider mb-1 text-swiss-dark/60">Min Stock Threshold *</label>
+                                  <input 
+                                    type="number"
+                                    required
+                                    min="0"
+                                    value={stockFormMinLevel}
+                                    onChange={(e) => setStockFormMinLevel(Number(e.target.value))}
+                                    className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block font-bold uppercase text-[9px] tracking-wider mb-1 text-swiss-dark/60">Branch Association</label>
+                                  <select
+                                    value={stockFormBranchId}
+                                    onChange={(e) => setStockFormBranchId(e.target.value)}
+                                    className="w-full bg-white border border-swiss-dark p-2 text-swiss-dark focus:outline-none cursor-pointer font-bold text-xs"
+                                  >
+                                    <option value="">🌐 Universal Ledger</option>
+                                    {activeHotelBranches.map((b: any) => (
+                                      <option key={b.id} value={b.id}>
+                                        📍 {b.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label className="block font-bold uppercase text-[9px] tracking-wider mb-1 text-swiss-dark/60">Expiry Date</label>
+                                  <input 
+                                    type="date"
+                                    value={stockFormExpiryDate}
+                                    onChange={(e) => setStockFormExpiryDate(e.target.value)}
+                                    className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block font-bold uppercase text-[9px] tracking-wider mb-1 text-swiss-dark/60">Supplier Name</label>
+                                  <input 
+                                    type="text"
+                                    value={stockFormSupplier}
+                                    onChange={(e) => setStockFormSupplier(e.target.value)}
+                                    placeholder="e.g. EcoHimal Farms"
+                                    className="w-full bg-swiss-light border border-swiss-dark p-2 text-swiss-dark focus:outline-none text-xs"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="flex gap-2 pt-2 border-t border-swiss-dark/10 mt-2">
+                                <button 
+                                  type="button"
+                                  onClick={() => {
+                                    setShowAddStockModal(false);
+                                    setEditingStockItem(null);
+                                  }}
+                                  className="w-1/2 bg-white hover:bg-swiss-light text-swiss-dark border border-swiss-dark p-2.5 font-bold uppercase transition-all tracking-wider cursor-pointer text-[10px]"
+                                >
+                                  Cancel
+                                </button>
+                                <button 
+                                  type="submit"
+                                  className="w-1/2 bg-terracotta hover:bg-swiss-dark text-white p-2.5 font-bold uppercase transition-all tracking-wider cursor-pointer border-none text-[10px]"
+                                >
+                                  {editingStockItem ? "Update Ledger" : "Catalog Item"}
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                )}
+                  );
+                })()}
 
                 {/* HOTEL ROOMS & RESERVATIONS (ENTERPRISE PLAN ONLY) */}
                 {adminActiveTab === "rooms" && hasModule("Hotel Rooms") && (
@@ -5384,269 +5987,95 @@ export default function App() {
               <div className="space-y-8 animate-fadeIn">
                 <div className="border-b-2 border-swiss-dark pb-2 flex justify-between items-end">
                   <div>
-                    <h2 className="text-2xl font-black uppercase swiss-header text-terracotta">Kitchen Display System (KDS)</h2>
-                    <p className="text-sm font-mono text-swiss-dark/70">Real-time incoming orders, preparation statuses, and quick table table creation access.</p>
+                    <h2 className="text-2xl font-black uppercase swiss-header text-terracotta flex items-center gap-2">
+                      Kitchen Display System (KDS)
+                      {cookLoggedIn && (
+                        <button
+                          onClick={() => {
+                            setCookLoggedIn(false);
+                            triggerNotification("Logged out of Cook session.");
+                          }}
+                          className="ml-4 text-[10px] font-mono tracking-wider normal-case bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-400 px-2 py-0.5 cursor-pointer font-bold"
+                        >
+                          🚪 Logout Cook
+                        </button>
+                      )}
+                    </h2>
+                    <p className="text-sm font-mono text-swiss-dark/70">Real-time incoming orders, preparation statuses, and quick table creation access.</p>
                   </div>
-                  <div className="text-xs font-mono bg-swiss-gray px-3 py-1 border border-swiss-dark">
-                    Active Orders: <span className="font-bold text-swiss-dark">{hotelOrders.filter(o => o.status !== "Completed" && o.status !== "Cancelled").length}</span>
-                  </div>
+                  {cookLoggedIn && (
+                    <div className="text-xs font-mono bg-swiss-gray px-3 py-1 border border-swiss-dark">
+                      Active Orders: <span className="font-bold text-swiss-dark">{hotelOrders.filter(o => o.status !== "Completed" && o.status !== "Cancelled").length}</span>
+                    </div>
+                  )}
                 </div>
 
-                {/* STAFF WORKSPACE SELECTION & NOTIFICATION HUD */}
-                <div className="bg-white border-2 border-swiss-dark p-6 space-y-4 font-mono text-xs">
-                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                    <div>
-                      <h3 className="text-sm font-black uppercase tracking-tight text-swiss-dark flex items-center gap-1.5">
-                        <User className="w-4 h-4 text-terracotta" />
-                        Staff Duty & Alert Terminal
-                      </h3>
-                      <p className="text-[10px] text-swiss-dark/70">
-                        Select your profile to check shift schedules, toggle attendance status, and receive direct dining room assignments.
-                      </p>
+                {!cookLoggedIn ? (
+                  <div className="max-w-md mx-auto my-12 bg-white border-2 border-swiss-dark p-8 font-mono text-xs shadow-md">
+                    <div className="text-center mb-6 border-b-2 border-dashed border-swiss-dark pb-4">
+                      <h3 className="text-lg font-black uppercase text-terracotta">Cook Portal Access</h3>
+                      <p className="text-[10px] text-swiss-dark/60 uppercase mt-1">HospitalityOS • Kitchen Display System</p>
                     </div>
                     
-                    <div className="flex items-center gap-3 w-full md:w-auto">
-                      <select
-                        value={selectedStaffId || ""}
-                        onChange={(e) => setSelectedStaffId(e.target.value || null)}
-                        className="w-full md:w-64 bg-swiss-light border-2 border-swiss-dark p-2 text-xs font-bold text-swiss-dark focus:outline-none cursor-pointer"
-                      >
-                        <option value="">👤 Select Your Staff Profile...</option>
-                        {employees
-                          .filter(emp => emp.hotelId === currentHotelId)
-                          .map(emp => (
-                            <option key={emp.id} value={emp.id}>
-                              {emp.role === "Waiter" ? "🏃" : emp.role === "Kitchen Staff" ? "🧑‍🍳" : emp.role === "Cashier" ? "💵" : "👔"} {emp.name} ({emp.role})
-                            </option>
-                          ))
-                        }
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* IF STAFF IS SELECTED */}
-                  {selectedStaffId && (() => {
-                    const activeStaff = employees.find(emp => emp.id === selectedStaffId);
-                    if (!activeStaff) return null;
-                    
-                    const unreadCount = staffNotifications.filter(n => !n.read).length;
-                    
-                    // Find assigned tables (for Waiter role)
-                    const assignedTables = tables.filter(t => t.hotelId === currentHotelId && t.assignedWaiterId === selectedStaffId);
-                    // Find assigned orders (for active waiter / kitchen staff)
-                    const assignedOrders = orders.filter(o => o.hotelId === currentHotelId && o.assignedStaffId === selectedStaffId && o.status !== "Completed" && o.status !== "Cancelled");
-                    
-                    return (
-                      <div className="mt-4 pt-4 border-t-2 border-swiss-dark space-y-4 animate-fadeIn">
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
-                          
-                          {/* PROFILE INFO & SCHEDULE */}
-                          <div className="md:col-span-2 flex flex-col sm:flex-row gap-4 items-start sm:items-center bg-swiss-light p-3 border border-swiss-dark">
-                            <div className="p-2 bg-swiss-dark text-white font-bold rounded-sm text-center min-w-[50px]">
-                              {activeStaff.role === "Waiter" ? "🏃" : activeStaff.role === "Kitchen Staff" ? "🧑‍🍳" : "👔"}
-                            </div>
-                            <div>
-                              <div className="font-bold text-sm text-swiss-dark">{activeStaff.name}</div>
-                              <div className="text-[10px] text-swiss-dark/70 uppercase font-black">{activeStaff.role} • {activeHotel?.branches.find(b => b.id === activeStaff.branchId)?.name || activeStaff.branchId}</div>
-                              <div className="text-[10px] text-terracotta mt-0.5 font-bold">⏰ Shift: {activeStaff.schedule || "09:00 - 18:00"}</div>
-                            </div>
-                          </div>
-
-                          {/* ATTENDANCE TOGGLE (CLOCK IN/OUT) */}
-                          <div className="flex flex-col justify-center bg-swiss-light p-3 border border-swiss-dark">
-                            <span className="text-[9px] font-bold text-swiss-dark/60 uppercase block mb-1">Attendance Status</span>
-                            <div className="flex items-center gap-2">
-                              <span className={`px-2 py-1 text-[10px] font-black border uppercase ${
-                                activeStaff.attendance === "Present" 
-                                  ? "bg-emerald-100 text-emerald-800 border-emerald-500 animate-pulse" 
-                                  : "bg-rose-100 text-rose-800 border-rose-400"
-                              }`}>
-                                {activeStaff.attendance === "Present" ? "🟢 Present (On Duty)" : "🔴 Absent (Off Duty)"}
-                              </span>
-                              <button
-                                onClick={async () => {
-                                  const targetAttendance = activeStaff.attendance === "Present" ? "Absent" : "Present";
-                                  await handleUpdateEmployeeAttendance(activeStaff.id, targetAttendance);
-                                  // Refresh specific staff notifications after status change
-                                  setTimeout(() => fetchStaffNotifications(activeStaff.id), 300);
-                                }}
-                                className={`px-3 py-1 text-[10px] uppercase font-bold border-2 border-swiss-dark cursor-pointer transition-all ${
-                                  activeStaff.attendance === "Present" 
-                                    ? "bg-neutral-200 hover:bg-neutral-300 text-swiss-dark" 
-                                    : "bg-terracotta hover:bg-swiss-dark text-white"
-                                }`}
-                              >
-                                {activeStaff.attendance === "Present" ? "Clock Out" : "Clock In"}
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* NOTIFICATION CENTER BADGE */}
-                          <div className="relative bg-swiss-light p-3 border border-swiss-dark flex justify-between items-center">
-                            <div>
-                              <span className="text-[9px] font-bold text-swiss-dark/60 uppercase block mb-0.5">Staff Alerts</span>
-                              <button
-                                onClick={() => setIsStaffNotificationOpen(!isStaffNotificationOpen)}
-                                className="flex items-center gap-2 px-3 py-1 bg-white border-2 border-swiss-dark hover:bg-neutral-50 font-bold uppercase tracking-wider text-[10px] cursor-pointer"
-                              >
-                                <Bell className={`w-4 h-4 text-terracotta ${unreadCount > 0 ? "animate-bounce" : ""}`} />
-                                {unreadCount > 0 ? `${unreadCount} Alerts` : "No Alerts"}
-                              </button>
-                            </div>
-                            {unreadCount > 0 && (
-                              <span className="absolute -top-2.5 -right-2.5 bg-rose-600 text-white border-2 border-swiss-dark w-6 h-6 rounded-full flex items-center justify-center font-black text-[11px] animate-pulse">
-                                {unreadCount}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* NOTIFICATIONS EXPANDED DROPDOWN LIST */}
-                        {isStaffNotificationOpen && (
-                          <div className="bg-white border-2 border-swiss-dark p-4 space-y-3 animate-fadeIn">
-                            <div className="flex justify-between items-center pb-2 border-b border-swiss-dark">
-                              <span className="font-bold text-swiss-dark text-[11px] uppercase tracking-wider">Duty Alerts Ledger</span>
-                              <div className="flex gap-2">
-                                {unreadCount > 0 && (
-                                  <button
-                                    onClick={handleMarkAllNotificationsRead}
-                                    className="text-[9px] font-bold uppercase text-terracotta border border-terracotta px-2 py-0.5 hover:bg-terracotta hover:text-white cursor-pointer"
-                                  >
-                                    Acknowledge All
-                                  </button>
-                                )}
-                                <button
-                                  onClick={() => setIsStaffNotificationOpen(false)}
-                                  className="text-[9px] font-bold uppercase text-swiss-dark/60 border border-swiss-dark/30 px-2 py-0.5 hover:bg-swiss-light cursor-pointer"
-                                >
-                                  Close [X]
-                                </button>
-                              </div>
-                            </div>
-
-                            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                              {staffNotifications.length === 0 ? (
-                                <div className="p-4 text-center text-swiss-dark/40 italic font-mono text-[10px]">
-                                  No notifications recorded. Start shift or receive assigned tables to trigger alerts.
-                                </div>
-                              ) : (
-                                [...staffNotifications].reverse().map((n) => (
-                                  <div 
-                                    key={n.id} 
-                                    className={`border p-3 transition-all ${
-                                      n.read 
-                                        ? "bg-swiss-light/40 border-swiss-dark/10 opacity-60" 
-                                        : "bg-amber-50 border-amber-300 shadow-sm"
-                                    }`}
-                                  >
-                                    <div className="flex justify-between items-start gap-4">
-                                      <div className="flex gap-2 items-start">
-                                        <span className="text-base mt-0.5">
-                                          {n.type === "shift_start" ? "⏱️" : n.type === "table_assignment" ? "📌" : "🛎️"}
-                                        </span>
-                                        <div>
-                                          <p className={`text-[11px] font-semibold text-swiss-dark ${n.read ? "line-through text-swiss-dark/55" : ""}`}>
-                                            {n.message}
-                                          </p>
-                                          <span className="text-[9px] text-swiss-dark/50 block mt-1">
-                                            {new Date(n.timestamp).toLocaleTimeString()} • {new Date(n.timestamp).toLocaleDateString()}
-                                          </span>
-                                        </div>
-                                      </div>
-                                      {!n.read && (
-                                        <button
-                                          onClick={() => handleMarkNotificationRead(n.id)}
-                                          className="bg-swiss-dark hover:bg-terracotta text-white px-2 py-0.5 text-[9px] font-bold uppercase cursor-pointer"
-                                        >
-                                          Acknowledge
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* ASSIGNED TABLES AND ACTIVE ORDERS CARDS */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          
-                          {/* MY ASSIGNED TABLES */}
-                          <div className="border border-swiss-dark bg-swiss-light/30 p-4">
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-swiss-dark/60 block mb-3 border-b border-swiss-dark/20 pb-1">
-                              📌 My Assigned Dining Tables ({assignedTables.length})
-                            </span>
-                            {assignedTables.length === 0 ? (
-                              <div className="p-4 text-center text-swiss-dark/50 italic text-[10px]">
-                                No specific tables assigned to you. Instruct corporate manager to set assignments in the Tables layout.
-                              </div>
-                            ) : (
-                              <div className="grid grid-cols-2 gap-2">
-                                {assignedTables.map(t => (
-                                  <div key={t.id} className="bg-white border border-swiss-dark p-2.5 font-mono text-[10px] space-y-1">
-                                    <div className="flex justify-between items-center">
-                                      <span className="font-black text-xs bg-swiss-dark text-white px-1.5 py-0.5">Table {t.number}</span>
-                                      <span className={`px-1.5 py-0.5 font-bold uppercase border text-[8px] ${
-                                        t.status === "Occupied" 
-                                          ? "bg-rose-50 text-rose-800 border-rose-300" 
-                                          : t.status === "Reserved"
-                                          ? "bg-amber-50 text-amber-800 border-amber-300"
-                                          : "bg-emerald-50 text-emerald-800 border-emerald-300"
-                                      }`}>
-                                        {t.status}
-                                      </span>
-                                    </div>
-                                    <p className="text-swiss-dark/70">Seats: <span className="font-bold">{t.seatingCapacity}</span></p>
-                                    {t.reservedName && <p className="text-swiss-dark/80 font-semibold truncate">Guest: {t.reservedName}</p>}
-                                    {t.reservedTime && <p className="text-swiss-dark/80 font-semibold text-[9px]">Time: {t.reservedTime}</p>}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* MY ACTIVE ORDERS */}
-                          <div className="border border-swiss-dark bg-swiss-light/30 p-4">
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-swiss-dark/60 block mb-3 border-b border-swiss-dark/20 pb-1">
-                              🛎️ My Active Orders Queue ({assignedOrders.length})
-                            </span>
-                            {assignedOrders.length === 0 ? (
-                              <div className="p-4 text-center text-swiss-dark/50 italic text-[10px]">
-                                You have no active orders queued. Orders auto-assigned by the dynamic rebalancer will appear here.
-                              </div>
-                            ) : (
-                              <div className="space-y-2">
-                                {assignedOrders.map(o => (
-                                  <div key={o.id} className="bg-white border border-swiss-dark p-3.5 font-mono text-[10px] space-y-1.5">
-                                    <div className="flex justify-between items-center">
-                                      <span className="font-bold text-terracotta text-xs">Order #{o.id}</span>
-                                      <span className="px-1.5 py-0.5 bg-swiss-dark text-white text-[8px] font-bold uppercase">
-                                        Table {o.tableNumber} • {o.status}
-                                      </span>
-                                    </div>
-                                    <div className="text-[9px] text-swiss-dark/70 border-b border-dashed border-swiss-dark/20 pb-1">
-                                      {o.items.map((it, idx) => (
-                                        <span key={idx} className="inline-block mr-2 font-semibold text-swiss-dark">
-                                          {it.quantity}x {it.name}
-                                        </span>
-                                      ))}
-                                    </div>
-                                    <div className="flex justify-between items-center">
-                                      <span className="font-bold text-swiss-dark">Total: NPR {o.totalAmount}</span>
-                                      <span className="text-[8px] text-swiss-dark/50">{new Date(o.timestamp).toLocaleTimeString()}</span>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-
-                        </div>
+                    {cookLoginError && (
+                      <div className="bg-rose-50 border border-rose-600 text-rose-800 p-3 mb-4 font-bold uppercase text-[10px]">
+                        {cookLoginError}
                       </div>
-                    );
-                  })()}
-                </div>
+                    )}
+
+                    <form onSubmit={(e) => {
+                      e.preventDefault();
+                      setCookLoginError(null);
+                      // Validate cook credentials: "cook" / "cook123" OR check any employee with role "Kitchen Staff"
+                      const isValidCook = (cookLoginUsername.toLowerCase() === "cook" && cookLoginPassword === "cook123") ||
+                        employees.some(emp => emp.hotelId === currentHotelId && emp.role === "Kitchen Staff" && emp.name.toLowerCase() === cookLoginUsername.toLowerCase() && cookLoginPassword === "cook123");
+
+                      if (isValidCook) {
+                        setCookLoggedIn(true);
+                        triggerNotification("Cook portal authenticated successfully.");
+                        setCookLoginUsername("");
+                        setCookLoginPassword("");
+                      } else {
+                        setCookLoginError("Invalid Cook Credentials. (Hint: username 'cook' and password 'cook123')");
+                      }
+                    }} className="space-y-4">
+                      <div>
+                        <label className="block font-bold mb-1 uppercase tracking-wider">Cook Username</label>
+                        <input 
+                          type="text" 
+                          value={cookLoginUsername}
+                          onChange={(e) => setCookLoginUsername(e.target.value)}
+                          placeholder="e.g. cook"
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-xs focus:outline-none"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1 uppercase tracking-wider">Password</label>
+                        <input 
+                          type="password" 
+                          value={cookLoginPassword}
+                          onChange={(e) => setCookLoginPassword(e.target.value)}
+                          placeholder="e.g. cook123"
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-xs focus:outline-none"
+                          required
+                        />
+                      </div>
+                      <button 
+                        type="submit"
+                        className="w-full bg-swiss-dark hover:bg-terracotta text-white font-bold p-3 uppercase tracking-wider cursor-pointer transition-colors"
+                      >
+                        Authenticate Cook Session
+                      </button>
+                    </form>
+                    <div className="mt-6 p-3 bg-swiss-light border border-swiss-dark/30 text-[9px] text-swiss-dark/70 space-y-1">
+                      <span className="font-bold uppercase block text-swiss-dark">Operational Credentials Reference:</span>
+                      <p>• Cooks Login Username: <span className="font-bold text-terracotta">cook</span></p>
+                      <p>• Password: <span className="font-bold text-terracotta">cook123</span></p>
+                    </div>
+                  </div>
+                ) : (
+                  <>
 
                 {/* QUICK ADD NEW QR TABLE & QR GENERATOR FOR KITCHEN STAFF */}
                 <div className="bg-sand-light border-2 border-swiss-dark p-4 font-mono text-xs">
@@ -5709,128 +6138,138 @@ export default function App() {
 
                 {/* INCOMING KITCHEN BOARD */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {hotelOrders.filter(o => o.status !== "Completed" && o.status !== "Cancelled").map(o => {
-                    const timerInfo = getOrderRemainingTime(o);
-                    const prepLimit = getOrderPrepTimeMinutes(o);
-                    const borderClass = timerInfo.isExceeded 
-                      ? "border-rose-600 border-4 bg-rose-50/15" 
-                      : "border-2 border-swiss-dark bg-white";
+                  <AnimatePresence mode="popLayout">
+                    {hotelOrders.filter(o => o.status !== "Completed" && o.status !== "Cancelled").map(o => {
+                      const timerInfo = getOrderRemainingTime(o);
+                      const prepLimit = getOrderPrepTimeMinutes(o);
+                      const borderClass = timerInfo.isExceeded 
+                        ? "border-rose-600 border-4 bg-rose-50/15" 
+                        : "border-2 border-swiss-dark bg-white";
 
-                    return (
-                      <div key={o.id} className={`${borderClass} flex flex-col font-mono text-xs transition-all duration-300`}>
-                        
-                        {/* HEADER */}
-                        <div className={`${timerInfo.isExceeded ? "bg-rose-800" : "bg-swiss-dark"} text-swiss-light p-3 flex justify-between items-center`}>
-                          <div>
-                            <span className="text-sand font-bold block text-sm">Order #{o.id}</span>
-                            <span className="text-[10px] text-swiss-gray">Table: {o.tableNumber} | Branch: {o.branchId}</span>
-                          </div>
-                          <span className={`${timerInfo.isExceeded ? "bg-white text-rose-800" : "bg-terracotta text-white"} px-2 py-0.5 text-[10px] uppercase font-bold`}>
-                            {o.status}
-                          </span>
-                        </div>
-
-                        {/* COUNTDOWN TIMER HUD */}
-                        <div className="bg-swiss-light px-3 py-2 border-b border-swiss-dark flex justify-between items-center text-[10px] font-bold">
-                          <div className="flex items-center gap-1.5">
-                            <Clock className={`w-3.5 h-3.5 ${timerInfo.isExceeded ? "text-rose-600 animate-pulse" : "text-swiss-dark/70"}`} />
-                            <span className={timerInfo.isExceeded ? "text-rose-700" : "text-swiss-dark/70"}>
-                              {timerInfo.isExceeded ? "LIMIT EXCEEDED" : "TIME REMAINING"} ({prepLimit}M LIMIT)
-                            </span>
-                          </div>
-                          <span className={`px-2 py-0.5 text-[11px] font-black border ${
-                            timerInfo.isExceeded 
-                              ? "bg-rose-100 text-rose-800 border-rose-600 animate-pulse" 
-                              : "bg-swiss-dark text-white border-swiss-dark"
-                          }`}>
-                            {timerInfo.formatted}
-                          </span>
-                        </div>
-
-                        {/* STAFF ASSIGNMENT HUD ROW */}
-                        <div className="px-3 py-2 border-b border-swiss-dark bg-white text-[10px] font-mono flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-bold uppercase text-swiss-dark/60">Assigned:</span>
-                            <span className={`px-1.5 py-0.5 font-bold border ${
-                              o.assignedStaffName 
-                                ? "bg-sand-light text-swiss-dark border-swiss-dark/30" 
-                                : "bg-rose-50 text-rose-800 border-rose-200 animate-pulse"
-                            }`}>
-                              {o.assignedStaffName ? `🧑‍🍳 ${o.assignedStaffName}` : "⚠️ UNASSIGNED"}
-                            </span>
-                          </div>
-                          <select
-                            value={o.assignedStaffId || ""}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              if (val) {
-                                const matchedEmp = employees.find(emp => emp.id === val);
-                                if (matchedEmp) {
-                                  handleAssignOrderStaff(o.id, matchedEmp.id, matchedEmp.name);
-                                }
-                              } else {
-                                handleAssignOrderStaff(o.id, "", "");
-                              }
-                            }}
-                            className="bg-swiss-light border border-swiss-dark text-[9px] p-0.5 focus:outline-none cursor-pointer"
-                          >
-                            <option value="">-- Assign --</option>
-                            {employees
-                              .filter(emp => emp.hotelId === currentHotelId && emp.attendance === "Present" && (emp.role === "Kitchen Staff" || emp.role === "Waiter"))
-                              .map(emp => (
-                                <option key={emp.id} value={emp.id}>
-                                  {emp.name} ({emp.role})
-                                </option>
-                              ))}
-                          </select>
-                        </div>
-
-                      {/* ITEMS */}
-                      <div className="p-4 flex-1 space-y-3">
-                        {o.items.map((item, idx) => (
-                          <div key={idx} className="pb-2 border-b border-swiss-gray flex justify-between items-start">
+                      return (
+                        <motion.div 
+                          key={o.id}
+                          layout
+                          initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                          animate={{ opacity: 1, scale: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.85, y: -20, transition: { duration: 0.25 } }}
+                          transition={{ type: "spring", stiffness: 260, damping: 25 }}
+                          className={`${borderClass} flex flex-col font-mono text-xs transition-all duration-300`}
+                        >
+                          
+                          {/* HEADER */}
+                          <div className={`${timerInfo.isExceeded ? "bg-rose-800" : "bg-swiss-dark"} text-swiss-light p-3 flex justify-between items-center`}>
                             <div>
-                              <div className="font-bold text-sm text-swiss-dark">{item.quantity}x {item.name}</div>
-                              {item.notes && (
-                                <div className="text-[10px] text-terracotta bg-amber-50 p-1 border-l-2 border-terracotta mt-1">
-                                  Notes: {item.notes}
-                                </div>
-                              )}
+                              <span className="text-sand font-bold block text-sm">Order #{o.id}</span>
+                              <span className="text-[10px] text-swiss-gray">Table: {o.tableNumber} | Branch: {o.branchId}</span>
                             </div>
+                            <span className={`${timerInfo.isExceeded ? "bg-white text-rose-800" : "bg-terracotta text-white"} px-2 py-0.5 text-[10px] uppercase font-bold`}>
+                              {o.status}
+                            </span>
                           </div>
-                        ))}
 
-                        {o.customerNotes && (
-                          <div className="bg-swiss-light p-2 border border-swiss-dark text-[10px] mt-2">
-                            <span className="font-bold block uppercase text-swiss-dark">Guest Request Note:</span>
-                            {o.customerNotes}
+                          {/* COUNTDOWN TIMER HUD */}
+                          <div className="bg-swiss-light px-3 py-2 border-b border-swiss-dark flex justify-between items-center text-[10px] font-bold">
+                            <div className="flex items-center gap-1.5">
+                              <Clock className={`w-3.5 h-3.5 ${timerInfo.isExceeded ? "text-rose-600 animate-pulse" : "text-swiss-dark/70"}`} />
+                              <span className={timerInfo.isExceeded ? "text-rose-700" : "text-swiss-dark/70"}>
+                                {timerInfo.isExceeded ? "LIMIT EXCEEDED" : "TIME REMAINING"} ({prepLimit}M LIMIT)
+                              </span>
+                            </div>
+                            <span className={`px-2 py-0.5 text-[11px] font-black border ${
+                              timerInfo.isExceeded 
+                                ? "bg-rose-100 text-rose-800 border-rose-600 animate-pulse" 
+                                : "bg-swiss-dark text-white border-swiss-dark"
+                            }`}>
+                              {timerInfo.formatted}
+                            </span>
                           </div>
-                        )}
-                      </div>
 
-                      {/* FOOTER CONTROLS */}
-                      <div className="bg-swiss-light p-3 border-t border-swiss-dark grid grid-cols-3 gap-1">
-                        <button 
-                          onClick={() => handleUpdateOrderStatus(o.id, "Accepted")}
-                          className="px-2 py-1.5 bg-neutral-200 hover:bg-neutral-300 font-bold uppercase text-[9px] cursor-pointer"
-                        >
-                          Accept
-                        </button>
-                        <button 
-                          onClick={() => handleUpdateOrderStatus(o.id, "Preparing")}
-                          className="px-2 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold uppercase text-[9px] cursor-pointer"
-                        >
-                          Prepare
-                        </button>
-                        <button 
-                          onClick={() => handleUpdateOrderStatus(o.id, "Ready")}
-                          className="px-2 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold uppercase text-[9px] cursor-pointer"
-                        >
-                          Ready
-                        </button>
-                      </div>
-                    </div>
-                  )})}
+                          {/* STAFF ASSIGNMENT HUD ROW */}
+                          <div className="px-3 py-2 border-b border-swiss-dark bg-white text-[10px] font-mono flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold uppercase text-swiss-dark/60">Assigned:</span>
+                              <span className={`px-1.5 py-0.5 font-bold border ${
+                                o.assignedStaffName 
+                                  ? "bg-sand-light text-swiss-dark border-swiss-dark/30" 
+                                  : "bg-rose-50 text-rose-800 border-rose-200 animate-pulse"
+                              }`}>
+                                {o.assignedStaffName ? `🧑‍🍳 ${o.assignedStaffName}` : "⚠️ UNASSIGNED"}
+                              </span>
+                            </div>
+                            <select
+                              value={o.assignedStaffId || ""}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val) {
+                                  const matchedEmp = employees.find(emp => emp.id === val);
+                                  if (matchedEmp) {
+                                    handleAssignOrderStaff(o.id, matchedEmp.id, matchedEmp.name);
+                                  }
+                                } else {
+                                  handleAssignOrderStaff(o.id, "", "");
+                                }
+                              }}
+                              className="bg-swiss-light border border-swiss-dark text-[9px] p-0.5 focus:outline-none cursor-pointer"
+                            >
+                              <option value="">-- Assign --</option>
+                              {employees
+                                .filter(emp => emp.hotelId === currentHotelId && emp.attendance === "Present" && (emp.role === "Kitchen Staff" || emp.role === "Waiter"))
+                                .map(emp => (
+                                  <option key={emp.id} value={emp.id}>
+                                    {emp.name} ({emp.role})
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+
+                        {/* ITEMS */}
+                        <div className="p-4 flex-1 space-y-3">
+                          {o.items.map((item, idx) => (
+                            <div key={idx} className="pb-2 border-b border-swiss-gray flex justify-between items-start">
+                              <div>
+                                <div className="font-bold text-sm text-swiss-dark">{item.quantity}x {item.name}</div>
+                                {item.notes && (
+                                  <div className="text-[10px] text-terracotta bg-amber-50 p-1 border-l-2 border-terracotta mt-1">
+                                    Notes: {item.notes}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+
+                          {o.customerNotes && (
+                            <div className="bg-swiss-light p-2 border border-swiss-dark text-[10px] mt-2">
+                              <span className="font-bold block uppercase text-swiss-dark">Guest Request Note:</span>
+                              {o.customerNotes}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* FOOTER CONTROLS */}
+                        <div className="bg-swiss-light p-3 border-t border-swiss-dark grid grid-cols-3 gap-1">
+                          <button 
+                            onClick={() => handleUpdateOrderStatus(o.id, "Accepted")}
+                            className="px-2 py-1.5 bg-neutral-200 hover:bg-neutral-300 font-bold uppercase text-[9px] cursor-pointer"
+                          >
+                            Accept
+                          </button>
+                          <button 
+                            onClick={() => handleUpdateOrderStatus(o.id, "Preparing")}
+                            className="px-2 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold uppercase text-[9px] cursor-pointer"
+                          >
+                            Prepare
+                          </button>
+                          <button 
+                            onClick={() => handleUpdateOrderStatus(o.id, "Ready")}
+                            className="px-2 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold uppercase text-[9px] cursor-pointer"
+                          >
+                            Ready
+                          </button>
+                        </div>
+                      </motion.div>
+                    )})}
+                  </AnimatePresence>
 
                   {hotelOrders.filter(o => o.status !== "Completed" && o.status !== "Cancelled").length === 0 && (
                     <div className="col-span-full py-16 text-center border-2 border-dashed border-swiss-dark/30 bg-swiss-light font-mono text-swiss-dark/60">
@@ -5838,6 +6277,8 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -5846,10 +6287,90 @@ export default function App() {
               <div className="space-y-8 animate-fadeIn">
                 <div className="border-b-2 border-swiss-dark pb-2 flex justify-between items-end">
                   <div>
-                    <h2 className="text-2xl font-black uppercase swiss-header text-terracotta">Dining Room & Billing Operations</h2>
+                    <h2 className="text-2xl font-black uppercase swiss-header text-terracotta flex items-center gap-2">
+                      Dining Room & Billing Operations
+                      {waiterCashierLoggedIn && (
+                        <button
+                          onClick={() => {
+                            setWaiterCashierLoggedIn(false);
+                            triggerNotification("Logged out of Staff session.");
+                          }}
+                          className="ml-4 text-[10px] font-mono tracking-wider normal-case bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-400 px-2 py-0.5 cursor-pointer font-bold animate-fadeIn"
+                        >
+                          🚪 Logout Staff
+                        </button>
+                      )}
+                    </h2>
                     <p className="text-sm font-mono text-swiss-dark/70">Resolve table calls, manage order delivery, checkout clients, split bills, and execute daily closing.</p>
                   </div>
                 </div>
+
+                {!waiterCashierLoggedIn ? (
+                  <div className="max-w-md mx-auto my-12 bg-white border-2 border-swiss-dark p-8 font-mono text-xs shadow-md">
+                    <div className="text-center mb-6 border-b-2 border-dashed border-swiss-dark pb-4">
+                      <h3 className="text-lg font-black uppercase text-terracotta">Dining Room & Billing Login</h3>
+                      <p className="text-[10px] text-swiss-dark/60 uppercase mt-1">HospitalityOS • Waiter & Cashier Terminal</p>
+                    </div>
+                    
+                    {staffLoginError && (
+                      <div className="bg-rose-50 border border-rose-600 text-rose-800 p-3 mb-4 font-bold uppercase text-[10px]">
+                        {staffLoginError}
+                      </div>
+                    )}
+
+                    <form onSubmit={(e) => {
+                      e.preventDefault();
+                      setStaffLoginError(null);
+                      // Validate staff credentials: "staff" / "staff123" OR check employees
+                      const isValidStaff = (staffLoginUsername.toLowerCase() === "staff" && staffLoginPassword === "staff123") ||
+                        employees.some(emp => emp.hotelId === currentHotelId && (emp.role === "Waiter" || emp.role === "Cashier") && emp.name.toLowerCase() === staffLoginUsername.toLowerCase() && staffLoginPassword === "staff123");
+
+                      if (isValidStaff) {
+                        setWaiterCashierLoggedIn(true);
+                        triggerNotification("Staff portal authenticated successfully.");
+                        setStaffLoginUsername("");
+                        setStaffLoginPassword("");
+                      } else {
+                        setStaffLoginError("Invalid Staff Credentials. (Hint: username 'staff' and password 'staff123')");
+                      }
+                    }} className="space-y-4">
+                      <div>
+                        <label className="block font-bold mb-1 uppercase tracking-wider">Staff Username</label>
+                        <input 
+                          type="text" 
+                          value={staffLoginUsername}
+                          onChange={(e) => setStaffLoginUsername(e.target.value)}
+                          placeholder="e.g. staff"
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-xs focus:outline-none"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1 uppercase tracking-wider">Password</label>
+                        <input 
+                          type="password" 
+                          value={staffLoginPassword}
+                          onChange={(e) => setStaffLoginPassword(e.target.value)}
+                          placeholder="e.g. staff123"
+                          className="w-full bg-swiss-light border border-swiss-dark p-2 text-xs focus:outline-none"
+                          required
+                        />
+                      </div>
+                      <button 
+                        type="submit"
+                        className="w-full bg-swiss-dark hover:bg-terracotta text-white font-bold p-3 uppercase tracking-wider cursor-pointer transition-colors"
+                      >
+                        Authenticate Staff Session
+                      </button>
+                    </form>
+                    <div className="mt-6 p-3 bg-swiss-light border border-swiss-dark/30 text-[9px] text-swiss-dark/70 space-y-1">
+                      <span className="font-bold uppercase block text-swiss-dark">Operational Credentials Reference:</span>
+                      <p>• Waiter & Cashier Username: <span className="font-bold text-terracotta">staff</span></p>
+                      <p>• Password: <span className="font-bold text-terracotta">staff123</span></p>
+                    </div>
+                  </div>
+                ) : (
+                  <>
 
                 {/* STAFF WORKSPACE SELECTION & NOTIFICATION HUD */}
                 <div className="bg-white border-2 border-swiss-dark p-6 space-y-4 font-mono text-xs">
@@ -6527,6 +7048,8 @@ export default function App() {
                       </div>
                     </div>
                   </div>
+                )}
+                  </>
                 )}
               </div>
             )}

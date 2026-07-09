@@ -141,6 +141,7 @@ interface StockItem {
   minLevel: number;
   expiryDate: string;
   supplier: string;
+  branchId?: string;
 }
 
 interface Employee {
@@ -513,11 +514,14 @@ const orders: Order[] = [
 ];
 
 const stockItems: StockItem[] = [
-  { id: "s-1", hotelId: "h-yak-yeti", name: "Buffalo Meat Minced", quantity: 45, unit: "kg", minLevel: 10, expiryDate: "2026-07-03", supplier: "Valley Meat Suppliers" },
-  { id: "s-2", hotelId: "h-yak-yeti", name: "Organic Coffee Beans (Lalitpur)", quantity: 18, unit: "kg", minLevel: 5, expiryDate: "2026-12-15", supplier: "EcoHimal Coffee Farms" },
-  { id: "s-3", hotelId: "h-yak-yeti", name: "Himalayan Wild Honey", quantity: 4, unit: "Litre", minLevel: 8, expiryDate: "2027-01-20", supplier: "Solukhumbu Cooperatives" },
-  { id: "s-4", hotelId: "h-yak-yeti", name: "Local Thakali Rice (Mustang)", quantity: 150, unit: "kg", minLevel: 50, expiryDate: "2026-11-30", supplier: "Thakali Food Traders" },
-  { id: "s-5", hotelId: "h-yak-yeti", name: "Sesame Seeds", quantity: 2.5, unit: "kg", minLevel: 3, expiryDate: "2026-08-10", supplier: "Makwanpur Seeds Co." }
+  { id: "s-1", hotelId: "h-yak-yeti", name: "Buffalo Meat Minced", quantity: 45, unit: "kg", minLevel: 10, expiryDate: "2026-07-03", supplier: "Valley Meat Suppliers", branchId: "b-ktm" },
+  { id: "s-2", hotelId: "h-yak-yeti", name: "Organic Coffee Beans (Lalitpur)", quantity: 18, unit: "kg", minLevel: 5, expiryDate: "2026-12-15", supplier: "EcoHimal Coffee Farms", branchId: "b-ktm" },
+  { id: "s-3", hotelId: "h-yak-yeti", name: "Himalayan Wild Honey", quantity: 4, unit: "Litre", minLevel: 8, expiryDate: "2027-01-20", supplier: "Solukhumbu Cooperatives", branchId: "b-ktm" },
+  { id: "s-4", hotelId: "h-yak-yeti", name: "Local Thakali Rice (Mustang)", quantity: 150, unit: "kg", minLevel: 50, expiryDate: "2026-11-30", supplier: "Thakali Food Traders", branchId: "b-ktm" },
+  { id: "s-5", hotelId: "h-yak-yeti", name: "Sesame Seeds", quantity: 2.5, unit: "kg", minLevel: 3, expiryDate: "2026-08-10", supplier: "Makwanpur Seeds Co.", branchId: "b-ktm" },
+  { id: "s-6", hotelId: "h-yak-yeti", name: "Local Ghee (Pure Yak)", quantity: 3, unit: "kg", minLevel: 10, expiryDate: "2026-07-01", supplier: "Kanchenjunga Dairy", branchId: "b-pkr" },
+  { id: "s-7", hotelId: "h-yak-yeti", name: "Darjeeling Tea Leaves", quantity: 35, unit: "kg", minLevel: 10, expiryDate: "2027-02-18", supplier: "Tea Growers Syndicate", branchId: "b-pkr" },
+  { id: "s-8", hotelId: "h-yak-yeti", name: "Wild Himalayan Mushrooms", quantity: 0, unit: "kg", minLevel: 5, expiryDate: "2026-06-30", supplier: "Himalayan Foragers", branchId: "b-ktm" }
 ];
 
 const employees: Employee[] = [
@@ -1237,7 +1241,65 @@ app.put("/api/orders/:id", (req, res) => {
   }
 
   if (status) {
+    const oldStatus = orders[idx].status;
     orders[idx].status = status;
+
+    // Automatic waiter assignment when order becomes "Ready"
+    if (status === "Ready" && oldStatus !== "Ready") {
+      const order = orders[idx];
+      const presentWaiters = employees.filter(
+        e => e.hotelId === order.hotelId && 
+             e.branchId === order.branchId && 
+             e.attendance === "Present" && 
+             e.role === "Waiter"
+      );
+
+      let chosenWaiter: Employee | null = null;
+      if (presentWaiters.length > 0) {
+        // Choose the waiter with the least active workload (fewer incomplete assigned orders)
+        let minLoad = Infinity;
+        presentWaiters.forEach(waiter => {
+          const activeLoad = orders.filter(
+            o => o.assignedStaffId === waiter.id && 
+                 o.status !== "Completed" && 
+                 o.status !== "Cancelled"
+          ).length;
+          if (activeLoad < minLoad) {
+            minLoad = activeLoad;
+            chosenWaiter = waiter;
+          }
+        });
+      } else {
+        // Fallback to any waiter assigned to this branch
+        const anyBranchWaiters = employees.filter(
+          e => e.hotelId === order.hotelId && 
+               e.branchId === order.branchId && 
+               e.role === "Waiter"
+        );
+        if (anyBranchWaiters.length > 0) {
+          chosenWaiter = anyBranchWaiters[0];
+        }
+      }
+
+      if (chosenWaiter) {
+        orders[idx].assignedStaffId = chosenWaiter.id;
+        orders[idx].assignedStaffName = chosenWaiter.name;
+
+        // Push real-time notification
+        staffNotifications.push({
+          id: `sn-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          hotelId: order.hotelId,
+          employeeId: chosenWaiter.id,
+          message: `🛎️ Order #${order.id} for Table ${order.tableNumber} is READY! Please deliver immediately.`,
+          type: "order_assignment",
+          timestamp: new Date().toISOString(),
+          read: false
+        });
+
+        console.log(`[Auto-Waiter] Ready Order #${order.id} assigned to Waiter ${chosenWaiter.name} (${chosenWaiter.id})`);
+      }
+    }
+
     // If order completed or cancelled, free up the table
     if (status === "Completed" || status === "Cancelled") {
       const tableId = orders[idx].tableId;
@@ -1245,10 +1307,16 @@ app.put("/api/orders/:id", (req, res) => {
       if (tIdx !== -1) tables[tIdx].status = "Vacant";
     }
   }
+
   if (paymentStatus) orders[idx].paymentStatus = paymentStatus;
   if (paymentMethod) orders[idx].paymentMethod = paymentMethod;
   if (rating) orders[idx].rating = rating;
   if (feedback) orders[idx].feedback = feedback;
+
+  // Persist modifications to JSON database on disk
+  if (typeof saveStateToDisk === "function") {
+    saveStateToDisk();
+  }
 
   res.json(orders[idx]);
 });
@@ -1581,19 +1649,63 @@ app.post("/api/load-balancer/rebalance", (req, res) => {
 });
 
 app.get("/api/inventory", (req, res) => {
-  const { hotelId } = req.query;
-  if (hotelId) return res.json(stockItems.filter(s => s.hotelId === hotelId));
-  res.json(stockItems);
+  const { hotelId, branchId } = req.query;
+  let filtered = stockItems;
+  if (hotelId) {
+    filtered = filtered.filter(s => s.hotelId === hotelId);
+  }
+  if (branchId) {
+    filtered = filtered.filter(s => s.branchId === branchId);
+  }
+  res.json(filtered);
+});
+
+app.post("/api/inventory", (req, res) => {
+  const { hotelId, name, quantity, unit, minLevel, expiryDate, supplier, branchId } = req.body;
+  if (!hotelId || !name) {
+    return res.status(400).json({ error: "Hotel ID and Item Name are required." });
+  }
+
+  const newItem: StockItem = {
+    id: `s-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    hotelId,
+    name,
+    quantity: Number(quantity) || 0,
+    unit: unit || "units",
+    minLevel: Number(minLevel) || 0,
+    expiryDate: expiryDate || new Date().toISOString().split('T')[0],
+    supplier: supplier || "Direct Sourced",
+    branchId: branchId || undefined
+  };
+
+  stockItems.push(newItem);
+  res.status(201).json(newItem);
 });
 
 app.put("/api/inventory/:id", (req, res) => {
   const { id } = req.params;
-  const { quantity } = req.body;
+  const { name, quantity, unit, minLevel, expiryDate, supplier, branchId } = req.body;
   const idx = stockItems.findIndex(s => s.id === id);
   if (idx === -1) return res.status(404).json({ error: "Stock item not found" });
 
+  if (name !== undefined) stockItems[idx].name = name;
   if (quantity !== undefined) stockItems[idx].quantity = Number(quantity);
+  if (unit !== undefined) stockItems[idx].unit = unit;
+  if (minLevel !== undefined) stockItems[idx].minLevel = Number(minLevel);
+  if (expiryDate !== undefined) stockItems[idx].expiryDate = expiryDate;
+  if (supplier !== undefined) stockItems[idx].supplier = supplier;
+  if (branchId !== undefined) stockItems[idx].branchId = branchId || undefined;
+
   res.json(stockItems[idx]);
+});
+
+app.delete("/api/inventory/:id", (req, res) => {
+  const { id } = req.params;
+  const idx = stockItems.findIndex(s => s.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Stock item not found" });
+
+  const deleted = stockItems.splice(idx, 1)[0];
+  res.json({ message: "Stock item deleted successfully", item: deleted });
 });
 
 // --- SERVER-SIDE GEMINI API INTENT PROXIES ---
